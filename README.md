@@ -1,6 +1,6 @@
 # Ubuntu Server 22.04 Baseline
 
-Fleet-ready Ubuntu 22.04 provisioning, hardening, and tuning baseline for:
+Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, and verification baseline for:
 
 - VPS infrastructure
 - Blockchain and masternode servers
@@ -9,17 +9,19 @@ Fleet-ready Ubuntu 22.04 provisioning, hardening, and tuning baseline for:
 - Build servers
 - General Ubuntu 22.04 infrastructure
 
+Designed for repeatable fleet provisioning with convergent/idempotent configuration handling.
+
 Current baseline version:
 
 ```text
-v1.3.0
+v1.3.1
 ```
 
 ---
 
-## Features
+# Features
 
-### Interactive Provisioning
+## Interactive Provisioning
 
 The setup script interactively prompts for:
 
@@ -37,9 +39,9 @@ The setup script interactively prompts for:
 
 ---
 
-## Dry-Run vs Apply Mode
+# Dry-Run vs Apply Mode
 
-### Dry-Run Mode
+## Dry-Run Mode
 
 Run:
 
@@ -69,7 +71,7 @@ DRY-RUN: Would securely prompt to set/change password during --apply mode.
 
 This is expected behavior and not an error.
 
-### Apply Mode
+## Apply Mode
 
 Run:
 
@@ -82,6 +84,7 @@ Apply mode:
 - performs system changes
 - writes configurations
 - configures users
+- installs/removes packages
 - restarts services when needed
 - securely prompts for passwords using Linux passwd
 
@@ -94,7 +97,7 @@ Passwords are:
 
 ---
 
-## Swap Management
+# Swap Management
 
 Supports:
 
@@ -103,6 +106,7 @@ Supports:
 - Persistent swap configuration
 - Existing swap detection
 - Safe swap rebuild logic
+- Idempotent swap handling
 
 Examples:
 
@@ -113,7 +117,7 @@ Examples:
 32768M
 ```
 
-### Auto Swap Recommendations
+## Auto Swap Recommendations
 
 | Server Type / RAM | Recommended Swap |
 |---|---:|
@@ -125,7 +129,7 @@ Examples:
 
 ---
 
-## System Limits Profiles
+# System Limits Profiles
 
 The script supports selectable limits profiles:
 
@@ -136,7 +140,7 @@ The script supports selectable limits profiles:
 | Max | 1,048,576 | 1,048,576 | 4,194,304 |
 | Custom | User-defined | User-defined | User-defined |
 
-### Recommended Default
+## Recommended Default
 
 For most VPS, blockchain, Docker, and RPC servers:
 
@@ -146,9 +150,9 @@ Recommended
 
 ---
 
-## Security Features
+# Security Features
 
-### SSH Hardening
+## SSH Hardening
 
 - Root SSH login disabled
 - SSH password authentication disabled
@@ -157,8 +161,10 @@ Recommended
 - Public key paste, root key copy, or generated keypair options
 - SSH session hardening
 - SSH config validation before restart
+- Reduced SSH authentication attempts
+- SSH keepalive tuning
 
-### Local Password Handling
+## Local Password Handling
 
 The script can:
 
@@ -174,14 +180,14 @@ Local passwords remain useful for:
 - sudo prompts
 - maintenance operations
 
-### Firewall and Protection
+## Firewall and Protection
 
 - UFW firewall
 - SSH port 22 automatically opened before firewall enablement
 - Optional additional TCP/UDP ports
 - Fail2Ban enabled
 
-### Recommended Security Defaults
+## Recommended Security Defaults
 
 Recommended production setup:
 
@@ -194,9 +200,9 @@ Recommended production setup:
 
 ---
 
-## System Tuning
+# System Tuning
 
-### Sysctl Tuning
+## Sysctl Tuning
 
 Includes:
 
@@ -208,7 +214,7 @@ Includes:
 - Kernel panic auto reboot
 - inotify scaling
 
-### Limits Integration
+## Limits Integration
 
 The selected limits profile is applied through:
 
@@ -219,7 +225,30 @@ The selected limits profile is applied through:
 
 ---
 
-## Time Synchronization
+# CPU Microcode Handling
+
+The script automatically installs the correct CPU microcode package and removes the incorrect vendor package.
+
+## Intel CPUs
+
+- installs `intel-microcode`
+- removes `amd64-microcode`
+
+## AMD CPUs
+
+- installs `amd64-microcode`
+- removes `intel-microcode`
+
+This improves:
+
+- fleet consistency
+- package cleanliness
+- update consistency
+- verification accuracy
+
+---
+
+# Time Synchronization
 
 Uses:
 
@@ -234,7 +263,7 @@ Conflicting services removed/disabled:
 
 ---
 
-## SSD/NVMe Optimization
+# SSD/NVMe Optimization
 
 Includes:
 
@@ -245,7 +274,7 @@ Includes:
 
 ---
 
-## Installed Utility Packages
+# Installed Utility Packages
 
 Includes:
 
@@ -276,7 +305,7 @@ Includes:
 
 ---
 
-## Logging and Backups
+# Logging and Backups
 
 Each run creates:
 
@@ -290,6 +319,7 @@ Includes:
 - full console log
 - configuration backups
 - server summary
+- verification references
 
 Summary file:
 
@@ -299,7 +329,7 @@ Summary file:
 
 ---
 
-## Verification Script
+# Verification Script
 
 Automatically generates:
 
@@ -307,7 +337,9 @@ Automatically generates:
 /root/ubuntu22-verify.sh
 ```
 
-Checks:
+The verification script is safe to rerun any time.
+
+It validates:
 
 - swap
 - sysctl values
@@ -318,13 +350,32 @@ Checks:
 - PAM limits
 - systemd limits
 - installed packages
+- microcode packages
 - summaries
 - backups
 - logs
 
+## Run Verification
+
+```bash
+bash /root/ubuntu22-verify.sh
+```
+
+## Useful Manual Checks
+
+```bash
+swapon --show
+free -h
+ulimit -n
+ufw status verbose
+systemctl status fail2ban --no-pager
+chronyc tracking
+timedatectl
+```
+
 ---
 
-## Repository Structure
+# Repository Structure
 
 ```text
 ubuntu-server-22.04-baseline/
@@ -339,7 +390,7 @@ ubuntu-server-22.04-baseline/
 
 ---
 
-## Usage
+# Usage
 
 Clone repository:
 
@@ -348,13 +399,13 @@ git clone https://github.com/Sil3ntVip3r/ubuntu-server-22.04-baseline.git
 cd ubuntu-server-22.04-baseline
 ```
 
-Run dry-run mode:
+## Run Dry-Run Mode
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh
 ```
 
-Run apply mode:
+## Run Apply Mode
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh --apply
@@ -362,7 +413,7 @@ sudo bash setup/ubuntu22-system-setup.sh --apply
 
 ---
 
-## Recommended Workflow
+# Recommended Workflow
 
 1. Run dry-run first
 2. Review hostname, swap, limits, firewall ports, SSH choices, and password selections
@@ -372,32 +423,11 @@ sudo bash setup/ubuntu22-system-setup.sh --apply
 6. Verify the new sudo admin SSH login works
 7. Run the generated verification script
 8. Reboot server
+9. Rerun verification after reboot
 
 ---
 
-## Verification
-
-Run:
-
-```bash
-sudo bash /root/ubuntu22-verify.sh
-```
-
-Useful manual checks:
-
-```bash
-swapon --show
-free -h
-ulimit -n
-ufw status verbose
-systemctl status fail2ban --no-pager
-chronyc tracking
-timedatectl
-```
-
----
-
-## Recovery
+# Recovery
 
 See:
 
@@ -407,7 +437,7 @@ docs/recovery.md
 
 ---
 
-## Limits Reference
+# Limits Reference
 
 See:
 
