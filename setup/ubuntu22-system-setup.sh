@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
@@ -13,8 +13,7 @@ SUMMARY_FILE="/root/server-baseline-summary.txt"
 VERIFY_SCRIPT="/root/ubuntu22-verify.sh"
 
 SWAP_FILE="/swapfile"
-SWAP_SIZE="20G"
-SWAP_SIZE_BYTES=$((20 * 1024 * 1024 * 1024))
+DEFAULT_SWAP_SIZE="20G"
 LIMIT_VALUE="500000"
 FILE_MAX="2097152"
 
@@ -119,6 +118,59 @@ prompt_yes_no() {
   [[ "$result" =~ ^[Yy]$ ]]
 }
 
+recommend_swap_size() {
+  local mem_mb
+  local role_lc
+  mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+  role_lc="$(echo "${SERVER_ROLE:-}" | tr '[:upper:]' '[:lower:]')"
+
+  if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then
+    echo "20G"
+  elif (( mem_mb <= 2048 )); then
+    echo "4G"
+  elif (( mem_mb <= 4096 )); then
+    echo "4G"
+  elif (( mem_mb <= 8192 )); then
+    echo "8G"
+  elif (( mem_mb <= 32768 )); then
+    echo "16G"
+  else
+    echo "20G"
+  fi
+}
+
+configure_swap_choice() {
+  local recommended
+  local choice
+  recommended="$(recommend_swap_size)"
+
+  echo
+  echo "Swap file size options:"
+  echo "1) Auto-recommended based on RAM/server role: $recommended"
+  echo "2) Custom size"
+  read -rp "Choose option [1-2]: " choice
+  choice="${choice:-1}"
+
+  case "$choice" in
+    1)
+      SWAP_SIZE="$recommended"
+      ;;
+    2)
+      SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")"
+      ;;
+    *)
+      fail "Invalid swap option"
+      ;;
+  esac
+
+  if [[ ! "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
+    fail "Invalid swap size format. Examples: 2G, 8G, 20G, 32768M"
+  fi
+
+  SWAP_SIZE_BYTES="$(numfmt --from=iec "$SWAP_SIZE")"
+  ok "Selected swap size: $SWAP_SIZE ($SWAP_SIZE_BYTES bytes)"
+}
+
 create_verify_script() {
   cat > "$VERIFY_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
@@ -179,6 +231,7 @@ Hostname: $(hostname)
 Server Role: ${SERVER_ROLE:-unknown}
 Provider/Location: ${SERVER_LOCATION:-unknown}
 Admin User: ${ADMIN_USER:-unknown}
+Desired Swap Size: ${SWAP_SIZE:-unknown}
 IP Addresses: $ips
 
 Swap:
@@ -221,6 +274,8 @@ ADMIN_USER="$(prompt_default 'Sudo admin username' 'admin')"
 
 [[ -z "$SERVER_HOSTNAME" ]] && fail "Hostname cannot be empty"
 [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"
+
+configure_swap_choice
 
 if [[ "$(hostname)" != "$SERVER_HOSTNAME" ]]; then
   run "hostnamectl set-hostname '$SERVER_HOSTNAME'"
@@ -342,9 +397,9 @@ if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$
   CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"
 fi
 if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then
-  ok "20GB swap already active and persistent"
+  ok "$SWAP_SIZE swap already active and persistent"
 else
-  change "Configuring 20GB swap"
+  change "Configuring $SWAP_SIZE swap"
   backup_file /etc/fstab
   run "swapoff '$SWAP_FILE' || true"
   run "rm -f '$SWAP_FILE'"
