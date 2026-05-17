@@ -12,7 +12,7 @@ Fleet-ready Ubuntu 22.04 provisioning, hardening, and tuning baseline for:
 Current baseline version:
 
 ```text
-v1.2.0
+v1.3.0
 ```
 
 ---
@@ -30,9 +30,67 @@ The setup script interactively prompts for:
 - Swap sizing mode
 - System limits profile
 - SSH key setup method
-- Extra firewall ports
+- Local admin password selection
 - Root password handling
+- Extra firewall ports
 - Optional reboot
+
+---
+
+## Dry-Run vs Apply Mode
+
+### Dry-Run Mode
+
+Run:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh
+```
+
+Dry-run mode:
+
+- shows planned actions
+- validates logic
+- validates configuration choices
+- previews changes
+- does NOT modify the system
+- does NOT restart services
+- does NOT create users
+- does NOT write configs
+- does NOT prompt for hidden password entry
+
+Password prompts are intentionally skipped during dry-run mode.
+
+Example:
+
+```text
+DRY-RUN: Would securely prompt to set/change password during --apply mode.
+```
+
+This is expected behavior and not an error.
+
+### Apply Mode
+
+Run:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply
+```
+
+Apply mode:
+
+- performs system changes
+- writes configurations
+- configures users
+- restarts services when needed
+- securely prompts for passwords using Linux passwd
+
+Passwords are:
+
+- never logged
+- never echoed
+- never stored in variables
+- never written to disk by the script
 
 ---
 
@@ -69,7 +127,7 @@ Examples:
 
 ## System Limits Profiles
 
-The script now supports selectable limits profiles:
+The script supports selectable limits profiles:
 
 | Profile | nofile / open files | nproc / processes | fs.file-max |
 |---|---:|---:|---:|
@@ -80,13 +138,11 @@ The script now supports selectable limits profiles:
 
 ### Recommended Default
 
-For most VPS, blockchain, Docker, and RPC servers, use:
+For most VPS, blockchain, Docker, and RPC servers:
 
 ```text
 Recommended
 ```
-
-Custom mode validates values before applying them.
 
 ---
 
@@ -102,6 +158,22 @@ Custom mode validates values before applying them.
 - SSH session hardening
 - SSH config validation before restart
 
+### Local Password Handling
+
+The script can:
+
+- set a local admin password
+- set/change the root password
+- optionally lock the root password
+
+Local passwords remain useful for:
+
+- console access
+- VPS web consoles
+- recovery mode
+- sudo prompts
+- maintenance operations
+
 ### Firewall and Protection
 
 - UFW firewall
@@ -109,18 +181,16 @@ Custom mode validates values before applying them.
 - Optional additional TCP/UDP ports
 - Fail2Ban enabled
 
-### Root Account Security
+### Recommended Security Defaults
 
-- Optional root password reset
-- Optional root password locking
-- Recovery-safe design
+Recommended production setup:
 
-Recommended default:
-
-- Set a known root password
 - Disable root SSH login
 - Disable SSH password authentication
-- Do not lock the root password unless you have another recovery path
+- Use SSH keys only
+- Set a known local admin password
+- Set a known local root password
+- Do not lock the root password unless alternate recovery access exists
 
 ---
 
@@ -157,7 +227,7 @@ Uses:
 - UTC timezone
 - North America and Ubuntu NTP pools
 
-Removes/conflicts avoided:
+Conflicting services removed/disabled:
 
 - legacy `ntp`
 - `systemd-timesyncd`
@@ -284,7 +354,7 @@ Run dry-run mode:
 sudo bash setup/ubuntu22-system-setup.sh
 ```
 
-Apply changes:
+Run apply mode:
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh --apply
@@ -295,12 +365,13 @@ sudo bash setup/ubuntu22-system-setup.sh --apply
 ## Recommended Workflow
 
 1. Run dry-run first
-2. Review selected hostname, swap, limits, firewall ports, and SSH choices
+2. Review hostname, swap, limits, firewall ports, SSH choices, and password selections
 3. Run apply mode
-4. Open a second terminal
-5. Verify the new sudo admin SSH login works
-6. Run the generated verification script
-7. Reboot server
+4. Complete password prompts during apply mode
+5. Open a second terminal
+6. Verify the new sudo admin SSH login works
+7. Run the generated verification script
+8. Reboot server
 
 ---
 
