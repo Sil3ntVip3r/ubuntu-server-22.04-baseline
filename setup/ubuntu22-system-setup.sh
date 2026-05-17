@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
@@ -20,6 +20,8 @@ NPROC_VALUE="500000"
 FILE_MAX="2097152"
 
 SSH_CHANGED=false
+ADMIN_LOCAL_PASSWORD_SELECTED="unknown"
+ROOT_PASSWORD_CHANGE_SELECTED="unknown"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root: sudo bash $0 --apply"
@@ -39,6 +41,17 @@ run() {
   echo "+ $*"
   if $APPLY; then
     eval "$@"
+  fi
+}
+
+password_prompt() {
+  local username="$1"
+  local label="$2"
+  if $APPLY; then
+    echo "Password prompt for $label will run now. Input will not be shown."
+    passwd "$username"
+  else
+    echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."
   fi
 }
 
@@ -279,6 +292,8 @@ Hostname: $(hostname)
 Server Role: ${SERVER_ROLE:-unknown}
 Provider/Location: ${SERVER_LOCATION:-unknown}
 Admin User: ${ADMIN_USER:-unknown}
+Admin Local Password Selected: ${ADMIN_LOCAL_PASSWORD_SELECTED:-unknown}
+Root Password Change Selected: ${ROOT_PASSWORD_CHANGE_SELECTED:-unknown}
 Desired Swap Size: ${SWAP_SIZE:-unknown}
 Limit Profile: ${LIMIT_PROFILE:-unknown}
 nofile Limit: ${LIMIT_VALUE:-unknown}
@@ -317,6 +332,10 @@ echo "========================================="
 echo " $SCRIPT_NAME v$SCRIPT_VERSION"
 echo " Mode: $([[ "$APPLY" == true ]] && echo APPLY || echo DRY-RUN)"
 echo "========================================="
+
+if ! $APPLY; then
+  warn "Dry-run mode will NOT ask for hidden password entry. Password prompts only run with --apply."
+fi
 
 info "Server identity"
 SERVER_HOSTNAME="$(prompt_default 'Server hostname' "$(hostname)")"
@@ -429,14 +448,25 @@ if prompt_yes_no "Allow passwordless sudo for $ADMIN_USER?" "N"; then
   run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"
   run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"
 else
-  echo "Normal sudo selected. You will set a local password for sudo."
-  run "passwd '$ADMIN_USER'"
+  ok "Normal sudo selected. A local password is recommended for sudo prompts."
 fi
+
+if prompt_yes_no "Set a local password for $ADMIN_USER?" "Y"; then
+  ADMIN_LOCAL_PASSWORD_SELECTED="yes"
+  password_prompt "$ADMIN_USER" "$ADMIN_USER"
+else
+  ADMIN_LOCAL_PASSWORD_SELECTED="no"
+  warn "No local password selected for $ADMIN_USER. SSH key login can still work, but console/sudo recovery may be limited."
+fi
+
 $APPLY && visudo -cf /etc/sudoers
 
 info "Root account security"
 if prompt_yes_no "Set/change the local root password?" "Y"; then
-  run "passwd root"
+  ROOT_PASSWORD_CHANGE_SELECTED="yes"
+  password_prompt root root
+else
+  ROOT_PASSWORD_CHANGE_SELECTED="no"
 fi
 if prompt_yes_no "Lock the root password afterward?" "N"; then
   run "passwd -l root"
