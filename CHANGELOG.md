@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.3.1
+
+### Fixed
+
+- Fixed verification script awk escaping bug causing:
+
+```text
+ubuntu22-verify.sh: line XX: $2: unbound variable
+```
+
+- Verification script now properly validates installed packages.
+- Improved generated verification output reliability.
+
+### Improved
+
+- CPU microcode handling now removes the incorrect vendor package.
+- Intel systems now remove `amd64-microcode`.
+- AMD systems now remove `intel-microcode`.
+- Verification summaries now show installed microcode packages.
+
+### Security / Stability
+
+- Cleaner CPU microcode management.
+- Reduced unnecessary package overlap.
+- Improved fleet consistency.
+
+---
+
+## v1.3.0
+
+### Added
+
+- Secure interactive password prompts for admin and root users.
+- Dry-run mode password skipping.
+- Dry-run password documentation.
+- Separate admin password handling from passwordless sudo.
+- Password selection tracking in summaries.
+
+### Improved
+
+- Clearer dry-run/apply workflow.
+- Safer password handling design.
+- Better production provisioning workflow.
+
+---
+
+## v1.2.0
+
+### Added
+
+- System limits profiles.
+- Conservative/recommended/max/custom limit selection.
+- Custom limit validation.
+- Limits profile logging and summaries.
+
+---
+
 ## v1.1.0
 
 ### Added
@@ -19,6 +76,8 @@
 | 8GB RAM | 8G |
 | 16GB-32GB RAM | 16G |
 | Blockchain / Docker / Build / RPC nodes | 20G |
+
+---
 
 ## v1.0.0
 
