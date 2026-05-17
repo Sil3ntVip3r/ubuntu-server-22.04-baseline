@@ -1,6 +1,6 @@
 # Ubuntu Server 22.04 Baseline
 
-Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, and verification baseline for:
+Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, and reusable configuration baseline for:
 
 - VPS infrastructure
 - Blockchain and masternode servers
@@ -14,7 +14,7 @@ Designed for repeatable fleet provisioning with convergent/idempotent configurat
 Current baseline version:
 
 ```text
-v1.3.1
+v1.4.0
 ```
 
 ---
@@ -37,6 +37,25 @@ The setup script interactively prompts for:
 - Extra firewall ports
 - Optional reboot
 
+## Saved Configuration Workflow
+
+Dry-run mode now automatically saves reusable configuration files.
+
+Configuration directory:
+
+```text
+/root/system-setup-configs/
+```
+
+Supports:
+
+- reusable provisioning configs
+- repeatable deployments
+- apply-mode config reuse
+- explicit config loading
+- fleet consistency
+- multi-server provisioning
+
 ---
 
 # Dry-Run vs Apply Mode
@@ -55,6 +74,7 @@ Dry-run mode:
 - validates logic
 - validates configuration choices
 - previews changes
+- saves reusable configuration files
 - does NOT modify the system
 - does NOT restart services
 - does NOT create users
@@ -81,6 +101,8 @@ sudo bash setup/ubuntu22-system-setup.sh --apply
 
 Apply mode:
 
+- can reuse latest saved config
+- can load explicit config files
 - performs system changes
 - writes configurations
 - configures users
@@ -94,6 +116,58 @@ Passwords are:
 - never echoed
 - never stored in variables
 - never written to disk by the script
+
+---
+
+# Configuration Reuse
+
+## Reuse Latest Config
+
+When running apply mode, the script can automatically reuse the most recent saved config.
+
+Example:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply
+```
+
+The script will prompt:
+
+```text
+Found previous saved configuration:
+/root/system-setup-configs/20260517-183000.conf
+
+Reuse this configuration? [Y/n]
+```
+
+## Load Explicit Config
+
+Example:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
+```
+
+## Example Config File
+
+```bash
+SERVER_HOSTNAME=node01
+SERVER_ROLE=rpc-node
+SERVER_LOCATION=OVH-Canada
+ADMIN_USER=admin
+SWAP_SIZE=20G
+LIMIT_PROFILE=recommended
+LIMIT_VALUE=500000
+NPROC_VALUE=500000
+FILE_MAX=2097152
+ALLOW_PASSWORDLESS_SUDO=yes
+SET_ADMIN_PASSWORD=yes
+SET_ROOT_PASSWORD=yes
+LOCK_ROOT_PASSWORD=no
+SSH_KEY_OPTION=2
+EXTRA_TCP_PORTS=16113,80,443
+EXTRA_UDP_PORTS=
+```
 
 ---
 
@@ -274,50 +348,21 @@ Includes:
 
 ---
 
-# Installed Utility Packages
-
-Includes:
-
-- htop
-- btop
-- iotop
-- iftop
-- nvme-cli
-- smartmontools
-- curl
-- wget
-- unzip
-- jq
-- git
-- net-tools
-- dnsutils
-- tmux
-- rsync
-- lsof
-- fail2ban
-- ufw
-- chrony
-- unattended-upgrades
-- needrestart
-- logrotate
-- sudo
-- openssh-server
-
----
-
-# Logging and Backups
+# Logging, Backups, and Configs
 
 Each run creates:
 
 ```text
 /root/system-setup-logs/YYYYMMDD-HHMMSS/
 /root/system-setup-backups/YYYYMMDD-HHMMSS/
+/root/system-setup-configs/YYYYMMDD-HHMMSS.conf
 ```
 
 Includes:
 
 - full console log
 - configuration backups
+- reusable provisioning config
 - server summary
 - verification references
 
@@ -351,6 +396,7 @@ It validates:
 - systemd limits
 - installed packages
 - microcode packages
+- saved configs
 - summaries
 - backups
 - logs
@@ -411,19 +457,26 @@ sudo bash setup/ubuntu22-system-setup.sh
 sudo bash setup/ubuntu22-system-setup.sh --apply
 ```
 
+## Run Apply Mode With Explicit Config
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
+```
+
 ---
 
 # Recommended Workflow
 
 1. Run dry-run first
-2. Review hostname, swap, limits, firewall ports, SSH choices, and password selections
-3. Run apply mode
-4. Complete password prompts during apply mode
-5. Open a second terminal
-6. Verify the new sudo admin SSH login works
-7. Run the generated verification script
-8. Reboot server
-9. Rerun verification after reboot
+2. Save and review generated config
+3. Reuse or edit config if needed
+4. Run apply mode
+5. Complete password prompts during apply mode
+6. Open a second terminal
+7. Verify the new sudo admin SSH login works
+8. Run the generated verification script
+9. Reboot server
+10. Rerun verification after reboot
 
 ---
 
