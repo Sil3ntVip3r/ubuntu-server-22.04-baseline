@@ -1,0 +1,503 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_NAME="ubuntu22-system-setup"
+SCRIPT_VERSION="1.0.0"
+APPLY=false
+[[ "${1:-}" == "--apply" ]] && APPLY=true
+
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+LOG_DIR="/root/system-setup-logs/$RUN_ID"
+BACKUP_DIR="/root/system-setup-backups/$RUN_ID"
+SUMMARY_FILE="/root/server-baseline-summary.txt"
+VERIFY_SCRIPT="/root/ubuntu22-verify.sh"
+
+SWAP_FILE="/swapfile"
+SWAP_SIZE="20G"
+SWAP_SIZE_BYTES=$((20 * 1024 * 1024 * 1024))
+LIMIT_VALUE="500000"
+FILE_MAX="2097152"
+
+SSH_CHANGED=false
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Run as root: sudo bash $0 --apply"
+  exit 1
+fi
+
+mkdir -p "$LOG_DIR" "$BACKUP_DIR"
+exec > >(tee -a "$LOG_DIR/console.log") 2>&1
+
+info() { echo; echo ">>> $*"; }
+ok() { echo "OK: $*"; }
+change() { echo "CHANGE: $*"; }
+warn() { echo "WARNING: $*"; }
+fail() { echo "ERROR: $*"; exit 1; }
+
+run() {
+  echo "+ $*"
+  if $APPLY; then
+    eval "$@"
+  fi
+}
+
+backup_file() {
+  local file="$1"
+  if [[ -f "$file" ]]; then
+    run "cp -a '$file' '$BACKUP_DIR/'"
+  fi
+}
+
+write_if_changed() {
+  local file="$1"
+  local content="$2"
+  if [[ -f "$file" ]] && cmp -s "$file" <(printf "%s\n" "$content"); then
+    ok "$file already matches desired config"
+  else
+    change "Updating $file"
+    backup_file "$file"
+    if $APPLY; then
+      mkdir -p "$(dirname "$file")"
+      printf "%s\n" "$content" > "$file"
+    fi
+  fi
+}
+
+ensure_package() {
+  local pkg="$1"
+  if dpkg -s "$pkg" >/dev/null 2>&1; then
+    ok "Package installed: $pkg"
+  else
+    run "apt install -y '$pkg'"
+  fi
+}
+
+ensure_line() {
+  local file="$1"
+  local line="$2"
+  if grep -Fxq "$line" "$file" 2>/dev/null; then
+    ok "$line exists in $file"
+  else
+    change "Adding line to $file: $line"
+    backup_file "$file"
+    run "echo '$line' >> '$file'"
+  fi
+}
+
+set_sshd_option() {
+  local key="$1"
+  local value="$2"
+  if grep -Eq "^[#[:space:]]*$key[[:space:]]+" /etc/ssh/sshd_config; then
+    if grep -Eq "^$key[[:space:]]+$value$" /etc/ssh/sshd_config; then
+      ok "SSH $key $value"
+    else
+      change "SSH $key $value"
+      run "sed -i 's|^[#[:space:]]*$key[[:space:]].*|$key $value|' /etc/ssh/sshd_config"
+      SSH_CHANGED=true
+    fi
+  else
+    change "Adding SSH $key $value"
+    run "echo '$key $value' >> /etc/ssh/sshd_config"
+    SSH_CHANGED=true
+  fi
+}
+
+prompt_default() {
+  local prompt="$1"
+  local default="$2"
+  local result
+  read -rp "$prompt [$default]: " result
+  echo "${result:-$default}"
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="$2"
+  local result
+  read -rp "$prompt [$default]: " result
+  result="${result:-$default}"
+  [[ "$result" =~ ^[Yy]$ ]]
+}
+
+create_verify_script() {
+  cat > "$VERIFY_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "========================================="
+echo " Ubuntu 22.04 Setup Verification"
+echo "========================================="
+
+check() {
+  local name="$1"
+  local cmd="$2"
+  echo
+  echo "---- $name ----"
+  eval "$cmd" || echo "FAILED: $name"
+}
+
+check "Swap" "swapon --show && free -h && grep '/swapfile' /etc/fstab"
+check "Sysctl memory tuning" "sysctl vm.swappiness vm.vfs_cache_pressure vm.dirty_ratio vm.dirty_background_ratio"
+check "Sysctl file/network/kernel tuning" "sysctl fs.file-max fs.inotify.max_user_watches fs.inotify.max_user_instances net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.core.default_qdisc net.ipv4.tcp_congestion_control kernel.panic"
+check "Limits config file" "cat /etc/security/limits.d/99-custom-limits.conf"
+check "PAM limits" "grep pam_limits.so /etc/pam.d/common-session /etc/pam.d/common-session-noninteractive"
+check "Systemd limits" "cat /etc/systemd/system.conf.d/99-custom-limits.conf && systemctl show --property DefaultLimitNOFILE --property DefaultLimitNPROC"
+check "Current shell limit" "ulimit -n && ulimit -u"
+check "Timezone and time sync" "timedatectl"
+check "Chrony service" "systemctl is-enabled chrony && systemctl is-active chrony && chronyc tracking && chronyc sources"
+check "Old/conflicting time services" "systemctl is-active systemd-timesyncd || true; dpkg -s ntp >/dev/null 2>&1 && echo 'WARNING: ntp package still installed' || echo 'OK: ntp package removed'"
+check "UFW firewall" "ufw status verbose"
+check "Fail2Ban" "systemctl is-enabled fail2ban && systemctl is-active fail2ban && fail2ban-client status || true"
+check "SSH config" "sshd -t && grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|UsePAM|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax)' /etc/ssh/sshd_config"
+check "fstrim timer" "systemctl is-enabled fstrim.timer && systemctl is-active fstrim.timer && systemctl list-timers fstrim.timer --no-pager"
+check "CPU microcode packages" "dpkg -l | grep -E 'intel-microcode|amd64-microcode' || echo 'No microcode package detected'"
+check "Installed utility packages" "dpkg -l htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate 2>/dev/null | awk '/^ii/ {print \\$2, \\$3}'"
+check "Baseline summary" "cat /root/server-baseline-summary.txt 2>/dev/null || echo 'No summary file found'"
+check "Backup folders" "ls -lah /root/system-setup-backups/ 2>/dev/null || echo 'No backup folder found'"
+check "Log folders" "ls -lah /root/system-setup-logs/ 2>/dev/null || echo 'No log folder found'"
+
+echo
+echo "========================================="
+echo " Verification complete"
+echo "========================================="
+EOF
+  chmod +x "$VERIFY_SCRIPT"
+}
+
+write_summary() {
+  local ips
+  ips="$(hostname -I 2>/dev/null | xargs || true)"
+  cat > "$SUMMARY_FILE" <<EOF
+Ubuntu Server Baseline Summary
+==============================
+Script: $SCRIPT_NAME
+Version: $SCRIPT_VERSION
+Run ID: $RUN_ID
+Applied: $APPLY
+Date UTC: $(date -u)
+Hostname: $(hostname)
+Server Role: ${SERVER_ROLE:-unknown}
+Provider/Location: ${SERVER_LOCATION:-unknown}
+Admin User: ${ADMIN_USER:-unknown}
+IP Addresses: $ips
+
+Swap:
+$(swapon --show 2>/dev/null || true)
+
+Memory:
+$(free -h 2>/dev/null || true)
+
+UFW:
+$(ufw status verbose 2>/dev/null || true)
+
+Fail2Ban:
+$(systemctl is-active fail2ban 2>/dev/null || true)
+
+Chrony:
+$(chronyc tracking 2>/dev/null || true)
+
+SSH Key Settings:
+$(grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|UsePAM|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax)' /etc/ssh/sshd_config 2>/dev/null || true)
+
+Sysctl:
+$(sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic 2>/dev/null || true)
+
+Logs: $LOG_DIR
+Backups: $BACKUP_DIR
+Verify Script: $VERIFY_SCRIPT
+EOF
+}
+
+echo "========================================="
+echo " $SCRIPT_NAME v$SCRIPT_VERSION"
+echo " Mode: $([[ "$APPLY" == true ]] && echo APPLY || echo DRY-RUN)"
+echo "========================================="
+
+info "Server identity"
+SERVER_HOSTNAME="$(prompt_default 'Server hostname' "$(hostname)")"
+SERVER_ROLE="$(prompt_default 'Server role' 'general-vps')"
+SERVER_LOCATION="$(prompt_default 'Provider/location' 'unknown')"
+ADMIN_USER="$(prompt_default 'Sudo admin username' 'admin')"
+
+[[ -z "$SERVER_HOSTNAME" ]] && fail "Hostname cannot be empty"
+[[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"
+
+if [[ "$(hostname)" != "$SERVER_HOSTNAME" ]]; then
+  run "hostnamectl set-hostname '$SERVER_HOSTNAME'"
+else
+  ok "Hostname already $SERVER_HOSTNAME"
+fi
+
+info "Updating package index"
+run "apt update -y"
+
+info "Installing baseline packages"
+PACKAGES=(
+  htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git
+  net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades
+  needrestart chrony ntpstat logrotate sudo openssh-server
+)
+for pkg in "${PACKAGES[@]}"; do ensure_package "$pkg"; done
+
+if dpkg -s ntp >/dev/null 2>&1; then
+  run "apt remove -y ntp"
+else
+  ok "ntp package not installed"
+fi
+
+info "Configuring timezone"
+if [[ "$(timedatectl show -p Timezone --value || true)" != "UTC" ]]; then
+  run "timedatectl set-timezone UTC"
+else
+  ok "Timezone already UTC"
+fi
+
+info "Creating sudo admin user"
+if id "$ADMIN_USER" >/dev/null 2>&1; then
+  ok "User $ADMIN_USER already exists"
+else
+  run "adduser --disabled-password --gecos '' '$ADMIN_USER'"
+fi
+run "usermod -aG sudo '$ADMIN_USER'"
+
+ADMIN_HOME="$(eval echo "~$ADMIN_USER")"
+ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"
+ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
+
+run "mkdir -p '$ADMIN_SSH_DIR'"
+run "touch '$ADMIN_AUTH_KEYS'"
+run "chmod 700 '$ADMIN_SSH_DIR'"
+run "chmod 600 '$ADMIN_AUTH_KEYS'"
+run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
+
+echo
+echo "SSH key setup options for $ADMIN_USER:"
+echo "1) Paste public SSH key"
+echo "2) Copy root's existing authorized_keys"
+echo "3) Generate a new SSH keypair on this server"
+read -rp "Choose option [1-3]: " SSH_KEY_OPTION
+SSH_KEY_OPTION="${SSH_KEY_OPTION:-2}"
+
+case "$SSH_KEY_OPTION" in
+  1)
+    read -rp "Paste the public SSH key for $ADMIN_USER: " ADMIN_PUBLIC_KEY
+    [[ -z "$ADMIN_PUBLIC_KEY" ]] && fail "SSH public key cannot be empty"
+    if grep -Fxq "$ADMIN_PUBLIC_KEY" "$ADMIN_AUTH_KEYS" 2>/dev/null; then
+      ok "SSH key already exists for $ADMIN_USER"
+    else
+      run "echo '$ADMIN_PUBLIC_KEY' >> '$ADMIN_AUTH_KEYS'"
+    fi
+    ;;
+  2)
+    if [[ -f /root/.ssh/authorized_keys ]]; then
+      run "cat /root/.ssh/authorized_keys >> '$ADMIN_AUTH_KEYS'"
+      run "sort -u '$ADMIN_AUTH_KEYS' -o '$ADMIN_AUTH_KEYS'"
+    else
+      fail "/root/.ssh/authorized_keys not found. Choose option 1 or 3."
+    fi
+    ;;
+  3)
+    KEY_PATH="/root/${ADMIN_USER}_ed25519"
+    [[ -f "$KEY_PATH" ]] && fail "Key already exists at $KEY_PATH"
+    run "ssh-keygen -t ed25519 -a 100 -f '$KEY_PATH' -N '' -C '${ADMIN_USER}@${SERVER_HOSTNAME}'"
+    run "cat '${KEY_PATH}.pub' >> '$ADMIN_AUTH_KEYS'"
+    echo
+    warn "Save this private key securely on your local machine: $KEY_PATH"
+    echo "Display it with: sudo cat $KEY_PATH"
+    echo "Connect with: ssh -i ${ADMIN_USER}_ed25519 $ADMIN_USER@SERVER_IP"
+    ;;
+  *) fail "Invalid SSH key option" ;;
+esac
+
+run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
+run "chmod 700 '$ADMIN_SSH_DIR'"
+run "chmod 600 '$ADMIN_AUTH_KEYS'"
+
+if $APPLY && [[ ! -s "$ADMIN_AUTH_KEYS" ]]; then
+  fail "$ADMIN_USER has no SSH authorized_keys. Refusing to disable root SSH."
+fi
+
+if prompt_yes_no "Allow passwordless sudo for $ADMIN_USER?" "N"; then
+  run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"
+  run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"
+else
+  echo "Normal sudo selected. You will set a local password for sudo."
+  run "passwd '$ADMIN_USER'"
+fi
+$APPLY && visudo -cf /etc/sudoers
+
+info "Root account security"
+if prompt_yes_no "Set/change the local root password?" "Y"; then
+  run "passwd root"
+fi
+if prompt_yes_no "Lock the root password afterward?" "N"; then
+  run "passwd -l root"
+else
+  ok "Root password left enabled for console/recovery use"
+fi
+
+info "Checking swap"
+CURRENT_SWAP_SIZE="0"
+if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$SWAP_FILE"; then
+  CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"
+fi
+if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then
+  ok "20GB swap already active and persistent"
+else
+  change "Configuring 20GB swap"
+  backup_file /etc/fstab
+  run "swapoff '$SWAP_FILE' || true"
+  run "rm -f '$SWAP_FILE'"
+  run "sed -i '\|$SWAP_FILE|d' /etc/fstab"
+  run "fallocate -l '$SWAP_SIZE' '$SWAP_FILE'"
+  run "chmod 600 '$SWAP_FILE'"
+  run "mkswap '$SWAP_FILE'"
+  run "swapon '$SWAP_FILE'"
+  run "echo '$SWAP_FILE none swap sw 0 0' >> /etc/fstab"
+fi
+
+info "Applying sysctl tuning"
+SYSCTL_CONTENT="vm.swappiness=10
+vm.vfs_cache_pressure=50
+vm.dirty_ratio=15
+vm.dirty_background_ratio=5
+fs.file-max=$FILE_MAX
+fs.inotify.max_user_watches=1048576
+fs.inotify.max_user_instances=8192
+net.core.somaxconn=65535
+net.ipv4.tcp_max_syn_backlog=8192
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+kernel.panic=10"
+write_if_changed /etc/sysctl.d/99-custom-system-tuning.conf "$SYSCTL_CONTENT"
+run "sysctl --system"
+
+info "Applying security and systemd limits"
+LIMITS_CONTENT="* soft nofile $LIMIT_VALUE
+* hard nofile $LIMIT_VALUE
+* soft nproc $LIMIT_VALUE
+* hard nproc $LIMIT_VALUE
+root soft nofile $LIMIT_VALUE
+root hard nofile $LIMIT_VALUE
+root soft nproc $LIMIT_VALUE
+root hard nproc $LIMIT_VALUE"
+write_if_changed /etc/security/limits.d/99-custom-limits.conf "$LIMITS_CONTENT"
+ensure_line /etc/pam.d/common-session "session required pam_limits.so"
+ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
+SYSTEMD_LIMITS_CONTENT="[Manager]
+DefaultLimitNOFILE=$LIMIT_VALUE
+DefaultLimitNPROC=$LIMIT_VALUE"
+write_if_changed /etc/systemd/system.conf.d/99-custom-limits.conf "$SYSTEMD_LIMITS_CONTENT"
+run "systemctl daemon-reexec"
+
+info "Configuring UFW firewall"
+if ufw status | grep -q "22/tcp"; then
+  ok "UFW already allows SSH port 22"
+else
+  run "ufw allow 22/tcp comment 'SSH'"
+fi
+read -rp "Extra TCP ports to allow, comma-separated, blank for none: " EXTRA_TCP_PORTS
+read -rp "Extra UDP ports to allow, comma-separated, blank for none: " EXTRA_UDP_PORTS
+IFS=',' read -ra TCP_PORTS <<< "$EXTRA_TCP_PORTS"
+for port in "${TCP_PORTS[@]}"; do
+  port="$(echo "$port" | xargs)"
+  [[ -n "$port" ]] && run "ufw allow ${port}/tcp"
+done
+IFS=',' read -ra UDP_PORTS <<< "$EXTRA_UDP_PORTS"
+for port in "${UDP_PORTS[@]}"; do
+  port="$(echo "$port" | xargs)"
+  [[ -n "$port" ]] && run "ufw allow ${port}/udp"
+done
+if ufw status | grep -q "Status: active"; then
+  ok "UFW already active"
+else
+  run "ufw --force enable"
+fi
+
+info "Configuring Fail2Ban"
+run "systemctl enable fail2ban"
+if systemctl is-active fail2ban >/dev/null 2>&1; then
+  ok "fail2ban already active"
+else
+  run "systemctl start fail2ban"
+fi
+
+info "Configuring Chrony"
+CHRONY_CONTENT="pool 0.ca.pool.ntp.org iburst maxsources 4
+pool 1.ca.pool.ntp.org iburst maxsources 4
+pool 2.ca.pool.ntp.org iburst maxsources 4
+pool 3.ca.pool.ntp.org iburst maxsources 4
+pool 0.north-america.pool.ntp.org iburst maxsources 4
+pool 1.north-america.pool.ntp.org iburst maxsources 4
+pool 2.north-america.pool.ntp.org iburst maxsources 4
+pool 3.north-america.pool.ntp.org iburst maxsources 4
+pool ntp.ubuntu.com iburst maxsources 4
+pool pool.ntp.org iburst maxsources 4
+driftfile /var/lib/chrony/chrony.drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony"
+write_if_changed /etc/chrony/chrony.conf "$CHRONY_CONTENT"
+run "systemctl disable --now systemd-timesyncd || true"
+run "systemctl enable chrony"
+run "systemctl restart chrony"
+
+info "Hardening SSH"
+backup_file /etc/ssh/sshd_config
+set_sshd_option PermitRootLogin no
+set_sshd_option PasswordAuthentication no
+set_sshd_option PubkeyAuthentication yes
+set_sshd_option KbdInteractiveAuthentication no
+set_sshd_option ChallengeResponseAuthentication no
+set_sshd_option UsePAM yes
+set_sshd_option MaxAuthTries 3
+set_sshd_option ClientAliveInterval 300
+set_sshd_option ClientAliveCountMax 2
+$APPLY && sshd -t
+[[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
+
+info "Enabling SSD/NVMe trim timer"
+systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"
+systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
+
+info "Installing CPU microcode"
+CPU_VENDOR="$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || true)"
+[[ "$CPU_VENDOR" == "GenuineIntel" ]] && ensure_package intel-microcode
+[[ "$CPU_VENDOR" == "AuthenticAMD" ]] && ensure_package amd64-microcode
+
+info "Creating verification script"
+if $APPLY; then
+  create_verify_script
+  write_summary
+else
+  echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"
+fi
+
+echo
+echo "========================================="
+echo " FINAL STATUS"
+echo "========================================="
+swapon --show || true
+free -h || true
+sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true
+ufw status verbose || true
+systemctl status fail2ban --no-pager || true
+chronyc tracking || true
+timedatectl || true
+sshd -t && echo "SSHD config valid"
+echo "Logs: $LOG_DIR"
+echo "Backups: $BACKUP_DIR"
+echo "Summary: $SUMMARY_FILE"
+echo "Verify script: $VERIFY_SCRIPT"
+
+echo
+echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"
+echo "ssh $ADMIN_USER@SERVER_IP"
+echo "sudo whoami"
+echo "Expected result: root"
+
+if prompt_yes_no "Reboot now?" "N"; then
+  run "reboot"
+else
+  echo "Recommended: reboot after first successful apply."
+fi
