@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.3.1"
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
@@ -86,6 +86,15 @@ ensure_package() {
   fi
 }
 
+remove_package_if_installed() {
+  local pkg="$1"
+  if dpkg -s "$pkg" >/dev/null 2>&1; then
+    run "apt remove -y '$pkg'"
+  else
+    ok "Package not installed: $pkg"
+  fi
+}
+
 ensure_line() {
   local file="$1"
   local line="$2"
@@ -147,8 +156,6 @@ recommend_swap_size() {
 
   if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then
     echo "20G"
-  elif (( mem_mb <= 2048 )); then
-    echo "4G"
   elif (( mem_mb <= 4096 )); then
     echo "4G"
   elif (( mem_mb <= 8192 )); then
@@ -263,8 +270,8 @@ check "UFW firewall" "ufw status verbose"
 check "Fail2Ban" "systemctl is-enabled fail2ban && systemctl is-active fail2ban && fail2ban-client status || true"
 check "SSH config" "sshd -t && grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|UsePAM|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax)' /etc/ssh/sshd_config"
 check "fstrim timer" "systemctl is-enabled fstrim.timer && systemctl is-active fstrim.timer && systemctl list-timers fstrim.timer --no-pager"
-check "CPU microcode packages" "dpkg -l | grep -E 'intel-microcode|amd64-microcode' || echo 'No microcode package detected'"
-check "Installed utility packages" "dpkg -l htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate 2>/dev/null | awk '/^ii/ {print \\$2, \\$3}'"
+check "CPU microcode packages" "dpkg -l | awk '/^ii/ && ($2 == \"intel-microcode\" || $2 == \"amd64-microcode\") {print $2, $3}' || true"
+check "Installed utility packages" "dpkg -l htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate 2>/dev/null | awk '/^ii/ {print $2, $3}'"
 check "Baseline summary" "cat /root/server-baseline-summary.txt 2>/dev/null || echo 'No summary file found'"
 check "Backup folders" "ls -lah /root/system-setup-backups/ 2>/dev/null || echo 'No backup folder found'"
 check "Log folders" "ls -lah /root/system-setup-logs/ 2>/dev/null || echo 'No log folder found'"
@@ -321,6 +328,9 @@ $(grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInte
 
 Sysctl:
 $(sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic 2>/dev/null || true)
+
+Microcode Packages:
+$(dpkg -l 2>/dev/null | awk '/^ii/ && ($2 == "intel-microcode" || $2 == "amd64-microcode") {print $2, $3}' || true)
 
 Logs: $LOG_DIR
 Backups: $BACKUP_DIR
@@ -598,10 +608,21 @@ info "Enabling SSD/NVMe trim timer"
 systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"
 systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
 
-info "Installing CPU microcode"
+info "Installing correct CPU microcode package"
 CPU_VENDOR="$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || true)"
-[[ "$CPU_VENDOR" == "GenuineIntel" ]] && ensure_package intel-microcode
-[[ "$CPU_VENDOR" == "AuthenticAMD" ]] && ensure_package amd64-microcode
+case "$CPU_VENDOR" in
+  GenuineIntel)
+    remove_package_if_installed amd64-microcode
+    ensure_package intel-microcode
+    ;;
+  AuthenticAMD)
+    remove_package_if_installed intel-microcode
+    ensure_package amd64-microcode
+    ;;
+  *)
+    warn "Unknown CPU vendor '$CPU_VENDOR'. Skipping microcode package cleanup."
+    ;;
+esac
 
 info "Creating verification script"
 if $APPLY; then
