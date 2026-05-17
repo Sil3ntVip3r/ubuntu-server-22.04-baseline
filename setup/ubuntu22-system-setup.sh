@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
@@ -14,7 +14,9 @@ VERIFY_SCRIPT="/root/ubuntu22-verify.sh"
 
 SWAP_FILE="/swapfile"
 DEFAULT_SWAP_SIZE="20G"
+LIMIT_PROFILE="recommended"
 LIMIT_VALUE="500000"
+NPROC_VALUE="500000"
 FILE_MAX="2097152"
 
 SSH_CHANGED=false
@@ -118,6 +120,12 @@ prompt_yes_no() {
   [[ "$result" =~ ^[Yy]$ ]]
 }
 
+validate_number() {
+  local value="$1"
+  local label="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "$label must be a whole number"
+}
+
 recommend_swap_size() {
   local mem_mb
   local role_lc
@@ -152,15 +160,9 @@ configure_swap_choice() {
   choice="${choice:-1}"
 
   case "$choice" in
-    1)
-      SWAP_SIZE="$recommended"
-      ;;
-    2)
-      SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")"
-      ;;
-    *)
-      fail "Invalid swap option"
-      ;;
+    1) SWAP_SIZE="$recommended" ;;
+    2) SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")" ;;
+    *) fail "Invalid swap option" ;;
   esac
 
   if [[ ! "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
@@ -169,6 +171,52 @@ configure_swap_choice() {
 
   SWAP_SIZE_BYTES="$(numfmt --from=iec "$SWAP_SIZE")"
   ok "Selected swap size: $SWAP_SIZE ($SWAP_SIZE_BYTES bytes)"
+}
+
+configure_limits_choice() {
+  local choice
+  echo
+  echo "System file/process limit profiles:"
+  echo "1) Conservative  - nofile/nproc 65535,   fs.file-max 1048576"
+  echo "2) Recommended   - nofile/nproc 500000,  fs.file-max 2097152"
+  echo "3) Max           - nofile/nproc 1048576, fs.file-max 4194304"
+  echo "4) Custom"
+  read -rp "Choose option [1-4]: " choice
+  choice="${choice:-2}"
+
+  case "$choice" in
+    1)
+      LIMIT_PROFILE="conservative"
+      LIMIT_VALUE="65535"
+      NPROC_VALUE="65535"
+      FILE_MAX="1048576"
+      ;;
+    2)
+      LIMIT_PROFILE="recommended"
+      LIMIT_VALUE="500000"
+      NPROC_VALUE="500000"
+      FILE_MAX="2097152"
+      ;;
+    3)
+      LIMIT_PROFILE="max"
+      LIMIT_VALUE="1048576"
+      NPROC_VALUE="1048576"
+      FILE_MAX="4194304"
+      ;;
+    4)
+      LIMIT_PROFILE="custom"
+      LIMIT_VALUE="$(prompt_default 'Custom nofile/open files limit' '500000')"
+      NPROC_VALUE="$(prompt_default 'Custom nproc/process limit' "$LIMIT_VALUE")"
+      FILE_MAX="$(prompt_default 'Custom fs.file-max kernel ceiling' '2097152')"
+      validate_number "$LIMIT_VALUE" "nofile limit"
+      validate_number "$NPROC_VALUE" "nproc limit"
+      validate_number "$FILE_MAX" "fs.file-max"
+      ;;
+    *) fail "Invalid limits profile option" ;;
+  esac
+
+  ok "Selected limits profile: $LIMIT_PROFILE"
+  ok "nofile=$LIMIT_VALUE nproc=$NPROC_VALUE fs.file-max=$FILE_MAX"
 }
 
 create_verify_script() {
@@ -232,6 +280,10 @@ Server Role: ${SERVER_ROLE:-unknown}
 Provider/Location: ${SERVER_LOCATION:-unknown}
 Admin User: ${ADMIN_USER:-unknown}
 Desired Swap Size: ${SWAP_SIZE:-unknown}
+Limit Profile: ${LIMIT_PROFILE:-unknown}
+nofile Limit: ${LIMIT_VALUE:-unknown}
+nproc Limit: ${NPROC_VALUE:-unknown}
+fs.file-max: ${FILE_MAX:-unknown}
 IP Addresses: $ips
 
 Swap:
@@ -276,6 +328,7 @@ ADMIN_USER="$(prompt_default 'Sudo admin username' 'admin')"
 [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"
 
 configure_swap_choice
+configure_limits_choice
 
 if [[ "$(hostname)" != "$SERVER_HOSTNAME" ]]; then
   run "hostnamectl set-hostname '$SERVER_HOSTNAME'"
@@ -315,7 +368,7 @@ else
 fi
 run "usermod -aG sudo '$ADMIN_USER'"
 
-ADMIN_HOME="$(eval echo "~$ADMIN_USER")"
+ADMIN_HOME="/home/$ADMIN_USER"
 ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"
 ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
 
@@ -430,18 +483,18 @@ run "sysctl --system"
 info "Applying security and systemd limits"
 LIMITS_CONTENT="* soft nofile $LIMIT_VALUE
 * hard nofile $LIMIT_VALUE
-* soft nproc $LIMIT_VALUE
-* hard nproc $LIMIT_VALUE
+* soft nproc $NPROC_VALUE
+* hard nproc $NPROC_VALUE
 root soft nofile $LIMIT_VALUE
 root hard nofile $LIMIT_VALUE
-root soft nproc $LIMIT_VALUE
-root hard nproc $LIMIT_VALUE"
+root soft nproc $NPROC_VALUE
+root hard nproc $NPROC_VALUE"
 write_if_changed /etc/security/limits.d/99-custom-limits.conf "$LIMITS_CONTENT"
 ensure_line /etc/pam.d/common-session "session required pam_limits.so"
 ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
 SYSTEMD_LIMITS_CONTENT="[Manager]
 DefaultLimitNOFILE=$LIMIT_VALUE
-DefaultLimitNPROC=$LIMIT_VALUE"
+DefaultLimitNPROC=$NPROC_VALUE"
 write_if_changed /etc/systemd/system.conf.d/99-custom-limits.conf "$SYSTEMD_LIMITS_CONTENT"
 run "systemctl daemon-reexec"
 
