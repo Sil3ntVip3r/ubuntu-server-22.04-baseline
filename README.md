@@ -9,6 +9,12 @@ Fleet-ready Ubuntu 22.04 provisioning, hardening, and tuning baseline for:
 - Build servers
 - General Ubuntu 22.04 infrastructure
 
+Current baseline version:
+
+```text
+v1.2.0
+```
+
 ---
 
 ## Features
@@ -21,7 +27,8 @@ The setup script interactively prompts for:
 - Server role
 - Provider/location
 - Sudo admin username
-- Swap sizing
+- Swap sizing mode
+- System limits profile
 - SSH key setup method
 - Extra firewall ports
 - Root password handling
@@ -51,12 +58,35 @@ Examples:
 ### Auto Swap Recommendations
 
 | Server Type / RAM | Recommended Swap |
-|---|---|
-| Small VPS (<=2GB RAM) | 4G |
+|---|---:|
+| Small VPS <=2GB RAM | 4G |
 | 4GB RAM | 4G |
 | 8GB RAM | 8G |
 | 16GB-32GB RAM | 16G |
 | Blockchain / Docker / Build / RPC nodes | 20G |
+
+---
+
+## System Limits Profiles
+
+The script now supports selectable limits profiles:
+
+| Profile | nofile / open files | nproc / processes | fs.file-max |
+|---|---:|---:|---:|
+| Conservative | 65,535 | 65,535 | 1,048,576 |
+| Recommended | 500,000 | 500,000 | 2,097,152 |
+| Max | 1,048,576 | 1,048,576 | 4,194,304 |
+| Custom | User-defined | User-defined | User-defined |
+
+### Recommended Default
+
+For most VPS, blockchain, Docker, and RPC servers, use:
+
+```text
+Recommended
+```
+
+Custom mode validates values before applying them.
 
 ---
 
@@ -68,13 +98,14 @@ Examples:
 - SSH password authentication disabled
 - SSH key authentication enabled
 - Configurable sudo admin user
+- Public key paste, root key copy, or generated keypair options
 - SSH session hardening
 - SSH config validation before restart
 
 ### Firewall and Protection
 
 - UFW firewall
-- SSH port automatically opened
+- SSH port 22 automatically opened before firewall enablement
 - Optional additional TCP/UDP ports
 - Fail2Ban enabled
 
@@ -83,6 +114,13 @@ Examples:
 - Optional root password reset
 - Optional root password locking
 - Recovery-safe design
+
+Recommended default:
+
+- Set a known root password
+- Disable root SSH login
+- Disable SSH password authentication
+- Do not lock the root password unless you have another recovery path
 
 ---
 
@@ -100,20 +138,14 @@ Includes:
 - Kernel panic auto reboot
 - inotify scaling
 
-### System Limits
+### Limits Integration
 
-Configures:
+The selected limits profile is applied through:
 
-- nofile limits
-- nproc limits
-- PAM limits
-- systemd limits
-
-Defaults:
-
-```text
-500000
-```
+- `/etc/security/limits.d/99-custom-limits.conf`
+- PAM session limits
+- systemd manager limits
+- `fs.file-max` sysctl
 
 ---
 
@@ -125,10 +157,10 @@ Uses:
 - UTC timezone
 - North America and Ubuntu NTP pools
 
-Removes conflicting:
+Removes/conflicts avoided:
 
-- ntp
-- systemd-timesyncd
+- legacy `ntp`
+- `systemd-timesyncd`
 
 ---
 
@@ -153,14 +185,24 @@ Includes:
 - iftop
 - nvme-cli
 - smartmontools
+- curl
+- wget
+- unzip
 - jq
+- git
+- net-tools
+- dnsutils
 - tmux
 - rsync
+- lsof
 - fail2ban
 - ufw
 - chrony
 - unattended-upgrades
 - needrestart
+- logrotate
+- sudo
+- openssh-server
 
 ---
 
@@ -175,9 +217,15 @@ Each run creates:
 
 Includes:
 
-- console logs
+- full console log
 - configuration backups
-- server summaries
+- server summary
+
+Summary file:
+
+```text
+/root/server-baseline-summary.txt
+```
 
 ---
 
@@ -192,15 +240,17 @@ Automatically generates:
 Checks:
 
 - swap
-- sysctl
+- sysctl values
 - firewall
 - fail2ban
 - chrony
 - SSH settings
-- limits
+- PAM limits
+- systemd limits
 - installed packages
 - summaries
 - backups
+- logs
 
 ---
 
@@ -211,6 +261,7 @@ ubuntu-server-22.04-baseline/
 ├── CHANGELOG.md
 ├── README.md
 ├── docs/
+│   ├── limits.md
 │   └── recovery.md
 ├── setup/
 │   └── ubuntu22-system-setup.sh
@@ -244,11 +295,12 @@ sudo bash setup/ubuntu22-system-setup.sh --apply
 ## Recommended Workflow
 
 1. Run dry-run first
-2. Run apply mode
-3. Open a second terminal
-4. Verify new SSH admin login works
-5. Run verification script
-6. Reboot server
+2. Review selected hostname, swap, limits, firewall ports, and SSH choices
+3. Run apply mode
+4. Open a second terminal
+5. Verify the new sudo admin SSH login works
+6. Run the generated verification script
+7. Reboot server
 
 ---
 
@@ -260,14 +312,16 @@ Run:
 sudo bash /root/ubuntu22-verify.sh
 ```
 
----
+Useful manual checks:
 
-## Versioning
-
-Current baseline version:
-
-```text
-v1.1.0
+```bash
+swapon --show
+free -h
+ulimit -n
+ufw status verbose
+systemctl status fail2ban --no-pager
+chronyc tracking
+timedatectl
 ```
 
 ---
@@ -278,4 +332,14 @@ See:
 
 ```text
 docs/recovery.md
+```
+
+---
+
+## Limits Reference
+
+See:
+
+```text
+docs/limits.md
 ```
