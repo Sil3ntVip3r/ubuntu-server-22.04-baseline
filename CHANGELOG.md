@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.4.0
+
+### Added
+
+- Saved configuration workflow.
+- Dry-run mode now automatically saves configuration files.
+- Apply mode can reuse the latest saved configuration.
+- Added `--config` support for explicit configuration loading.
+- Added reusable fleet provisioning workflow.
+- Added configuration summaries.
+- Added configuration validation before apply.
+- Added saved configuration tracking to summaries.
+- Added verification checks for saved configs.
+
+### New Configuration Directory
+
+```text
+/root/system-setup-configs/
+```
+
+### New Usage Examples
+
+Dry-run and save config:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh
+```
+
+Apply and reuse latest config:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply
+```
+
+Apply with explicit config:
+
+```bash
+sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
+```
+
+### Improved
+
+- Better fleet provisioning workflow.
+- Easier repeatable server deployments.
+- Better idempotent provisioning support.
+- Faster multi-server setup.
+- Better operational consistency.
+
+---
+
 ## v1.3.1
 
 ### Fixed
