@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.6.1
+
+### Fixed
+
+- Fixed silent script exits found during real server testing.
+- Fixed `backup_file()` returning non-zero when there was no existing file to back up.
+- Fixed dry-run command wrapper behavior so dry-run returns success cleanly.
+- Added an error trap so future failures print the failing line and command.
+- Fixed the first-run path where the script stopped before creating `/root/ubuntu22-verify.sh`.
+
+### Root Cause
+
+`set -e` treated a missing backup source file as a fatal error. This caused the run to stop while creating new files such as:
+
+```text
+/etc/sysctl.d/99-custom-system-tuning.conf
+```
+
+### Improved
+
+- Better first-run reliability.
+- Clearer troubleshooting output.
+- More reliable verification script generation.
+
+---
+
 ## v1.6.0
 
 ### Added
@@ -7,64 +33,18 @@
 - Optional WireGuard VPN support.
 - Optional WireGuard package-only installation mode.
 - Optional WireGuard simple server configuration mode.
-- Automatic WireGuard key generation.
-- Automatic WireGuard interface configuration.
-- Automatic WireGuard UFW UDP rule configuration.
-- Automatic WireGuard service enablement.
+- WireGuard interface configuration.
+- WireGuard UFW UDP rule configuration.
+- WireGuard service enablement.
 - WireGuard verification checks.
 - WireGuard reporting in server summaries.
 - Dedicated WireGuard documentation.
-
-### WireGuard Packages
-
-The baseline can now install:
-
-- wireguard
-- wireguard-tools
-- qrencode
-
-### WireGuard Features
-
-Optional server mode now supports:
-
-- private key generation
-- public key generation
-- interface creation
-- persistent configuration
-- automatic service startup
-- optional peer configuration
-
-### Security Improvements
-
-- WireGuard private keys are never stored in reusable config files.
-- WireGuard private keys are never printed into logs.
-- WireGuard configs are created with restrictive permissions.
-- Key generation occurs locally on the target server.
-
-### Documentation Improvements
-
-Updated:
-
-- README.md
-- CHANGELOG.md
-- verification references
-- feature summaries
 
 Added:
 
 ```text
 docs/wireguard.md
 ```
-
-### Future Expansion Path
-
-WireGuard support creates a foundation for future:
-
-- VPN-only management
-- private RPC networking
-- full mesh topologies
-- fleet interconnects
-- internal-only infrastructure
 
 ---
 
@@ -75,25 +55,8 @@ WireGuard support creates a foundation for future:
 - Fixed generated verification script variable expansion issues.
 - Fixed `$2: unbound variable` verification failures.
 - Verification script now safely executes nested shell checks.
-
-### Security / Safety Improvements
-
-- Removed dangerous automatic microcode package removal behavior.
-- Baseline now avoids accidental removal of kernel meta-packages.
-- Opposite-vendor microcode packages are now WARNED about instead of automatically removed.
-
-### Microcode Safety Change
-
-Previous behavior:
-
-- Intel systems removed `amd64-microcode`
-- AMD systems removed `intel-microcode`
-
-New safer behavior:
-
-- Correct microcode package is installed automatically.
-- Opposite microcode package is left installed unless manually reviewed.
-- Script warns administrators to manually simulate package removal before cleanup.
+- Removed risky automatic opposite-vendor microcode package removal.
+- Opposite-vendor microcode packages are now warned about instead of automatically removed.
 
 ---
 
@@ -169,11 +132,11 @@ ubuntu22-verify.sh: line XX: $2: unbound variable
 
 ### Added
 
-- Interactive swap sizing
-- Auto-recommended swap size calculation based on RAM and server role
-- Custom swap size entry support
-- Swap validation for G/M suffixes
-- Swap size recorded in server summary
+- Interactive swap sizing.
+- Auto-recommended swap size calculation based on RAM and server role.
+- Custom swap size entry support.
+- Swap validation for G/M suffixes.
+- Swap size recorded in server summary.
 
 ---
 
