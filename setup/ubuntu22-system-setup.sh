@@ -2,16 +2,13 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.5.0"
 APPLY=false
 CONFIG_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --apply)
-      APPLY=true
-      shift
-      ;;
+    --apply) APPLY=true; shift ;;
     --config)
       CONFIG_FILE="${2:-}"
       [[ -z "$CONFIG_FILE" ]] && { echo "ERROR: --config requires a file path"; exit 1; }
@@ -21,10 +18,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: sudo bash setup/ubuntu22-system-setup.sh [--apply] [--config /path/to/config.conf]"
       exit 0
       ;;
-    *)
-      echo "ERROR: Unknown option: $1"
-      exit 1
-      ;;
+    *) echo "ERROR: Unknown option: $1"; exit 1 ;;
   esac
 done
 
@@ -57,15 +51,14 @@ ALLOW_PASSWORDLESS_SUDO="no"
 SET_ADMIN_PASSWORD="yes"
 SET_ROOT_PASSWORD="yes"
 LOCK_ROOT_PASSWORD="no"
-ADMIN_LOCAL_PASSWORD_SELECTED="unknown"
-ROOT_PASSWORD_CHANGE_SELECTED="unknown"
+RUN_SYSTEM_UPDATES="yes"
+ENABLE_UNATTENDED_SECURITY_UPDATES="yes"
 CONFIG_LOADED=false
 SSH_CHANGED=false
+ADMIN_LOCAL_PASSWORD_SELECTED="unknown"
+ROOT_PASSWORD_CHANGE_SELECTED="unknown"
 
-if [[ $EUID -ne 0 ]]; then
-  echo "Run as root: sudo bash $0 --apply"
-  exit 1
-fi
+[[ $EUID -ne 0 ]] && { echo "Run as root: sudo bash $0 --apply"; exit 1; }
 
 mkdir -p "$LOG_DIR" "$BACKUP_DIR" "$CONFIG_DIR"
 exec > >(tee -a "$LOG_DIR/console.log") 2>&1
@@ -78,13 +71,75 @@ fail() { echo "ERROR: $*"; exit 1; }
 
 run() {
   echo "+ $*"
-  if $APPLY; then
-    eval "$@"
+  if $APPLY; then eval "$@"; fi
+}
+
+quote_value() { printf '%q' "$1"; }
+
+backup_file() {
+  local file="$1"
+  [[ -f "$file" ]] && run "cp -a '$file' '$BACKUP_DIR/'"
+}
+
+write_if_changed() {
+  local file="$1" content="$2"
+  if [[ -f "$file" ]] && cmp -s "$file" <(printf "%s\n" "$content"); then
+    ok "$file already matches desired config"
+  else
+    change "Updating $file"
+    backup_file "$file"
+    if $APPLY; then
+      mkdir -p "$(dirname "$file")"
+      printf "%s\n" "$content" > "$file"
+    fi
   fi
 }
 
-quote_value() {
-  printf '%q' "$1"
+ensure_package() {
+  local pkg="$1"
+  if dpkg -s "$pkg" >/dev/null 2>&1; then ok "Package installed: $pkg"; else run "apt install -y '$pkg'"; fi
+}
+
+remove_package_if_installed() {
+  local pkg="$1"
+  if dpkg -s "$pkg" >/dev/null 2>&1; then run "apt remove -y '$pkg'"; else ok "Package not installed: $pkg"; fi
+}
+
+ensure_line() {
+  local file="$1" line="$2"
+  if grep -Fxq "$line" "$file" 2>/dev/null; then
+    ok "$line exists in $file"
+  else
+    change "Adding line to $file: $line"
+    backup_file "$file"
+    run "echo '$line' >> '$file'"
+  fi
+}
+
+prompt_default() {
+  local prompt="$1" default="$2" result
+  read -rp "$prompt [$default]: " result
+  echo "${result:-$default}"
+}
+
+prompt_yes_no() {
+  local prompt="$1" default="$2" result
+  read -rp "$prompt [$default]: " result
+  result="${result:-$default}"
+  [[ "$result" =~ ^[Yy]$ ]]
+}
+
+bool_value() { if prompt_yes_no "$1" "$2"; then echo "yes"; else echo "no"; fi; }
+validate_number() { [[ "$1" =~ ^[0-9]+$ ]] || fail "$2 must be a whole number"; }
+
+password_prompt() {
+  local username="$1" label="$2"
+  if $APPLY; then
+    echo "Password prompt for $label will run now. Input will not be shown."
+    passwd "$username"
+  else
+    echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."
+  fi
 }
 
 save_config() {
@@ -108,6 +163,8 @@ ALLOW_PASSWORDLESS_SUDO=$(quote_value "$ALLOW_PASSWORDLESS_SUDO")
 SET_ADMIN_PASSWORD=$(quote_value "$SET_ADMIN_PASSWORD")
 SET_ROOT_PASSWORD=$(quote_value "$SET_ROOT_PASSWORD")
 LOCK_ROOT_PASSWORD=$(quote_value "$LOCK_ROOT_PASSWORD")
+RUN_SYSTEM_UPDATES=$(quote_value "$RUN_SYSTEM_UPDATES")
+ENABLE_UNATTENDED_SECURITY_UPDATES=$(quote_value "$ENABLE_UNATTENDED_SECURITY_UPDATES")
 EOF
   chmod 600 "$GENERATED_CONFIG_FILE"
   ok "Saved configuration: $GENERATED_CONFIG_FILE"
@@ -124,16 +181,11 @@ load_config() {
 }
 
 load_latest_config_if_requested() {
-  local latest=""
+  local latest
   latest="$(ls -1t "$CONFIG_DIR"/*.conf 2>/dev/null | head -n1 || true)"
   [[ -z "$latest" ]] && return 0
-
-  echo
-  echo "Found previous saved configuration:"
-  echo "$latest"
-  if prompt_yes_no "Reuse this configuration?" "Y"; then
-    load_config "$latest"
-  fi
+  echo; echo "Found previous saved configuration:"; echo "$latest"
+  if prompt_yes_no "Reuse this configuration?" "Y"; then load_config "$latest"; fi
 }
 
 show_config_summary() {
@@ -156,151 +208,29 @@ show_config_summary() {
   echo "Set admin password: $SET_ADMIN_PASSWORD"
   echo "Set root password: $SET_ROOT_PASSWORD"
   echo "Lock root password: $LOCK_ROOT_PASSWORD"
-}
-
-password_prompt() {
-  local username="$1"
-  local label="$2"
-  if $APPLY; then
-    echo "Password prompt for $label will run now. Input will not be shown."
-    passwd "$username"
-  else
-    echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."
-  fi
-}
-
-backup_file() {
-  local file="$1"
-  if [[ -f "$file" ]]; then
-    run "cp -a '$file' '$BACKUP_DIR/'"
-  fi
-}
-
-write_if_changed() {
-  local file="$1"
-  local content="$2"
-  if [[ -f "$file" ]] && cmp -s "$file" <(printf "%s\n" "$content"); then
-    ok "$file already matches desired config"
-  else
-    change "Updating $file"
-    backup_file "$file"
-    if $APPLY; then
-      mkdir -p "$(dirname "$file")"
-      printf "%s\n" "$content" > "$file"
-    fi
-  fi
-}
-
-ensure_package() {
-  local pkg="$1"
-  if dpkg -s "$pkg" >/dev/null 2>&1; then
-    ok "Package installed: $pkg"
-  else
-    run "apt install -y '$pkg'"
-  fi
-}
-
-remove_package_if_installed() {
-  local pkg="$1"
-  if dpkg -s "$pkg" >/dev/null 2>&1; then
-    run "apt remove -y '$pkg'"
-  else
-    ok "Package not installed: $pkg"
-  fi
-}
-
-ensure_line() {
-  local file="$1"
-  local line="$2"
-  if grep -Fxq "$line" "$file" 2>/dev/null; then
-    ok "$line exists in $file"
-  else
-    change "Adding line to $file: $line"
-    backup_file "$file"
-    run "echo '$line' >> '$file'"
-  fi
-}
-
-set_sshd_option() {
-  local key="$1"
-  local value="$2"
-  if grep -Eq "^[#[:space:]]*$key[[:space:]]+" /etc/ssh/sshd_config; then
-    if grep -Eq "^$key[[:space:]]+$value$" /etc/ssh/sshd_config; then
-      ok "SSH $key $value"
-    else
-      change "SSH $key $value"
-      run "sed -i 's|^[#[:space:]]*$key[[:space:]].*|$key $value|' /etc/ssh/sshd_config"
-      SSH_CHANGED=true
-    fi
-  else
-    change "Adding SSH $key $value"
-    run "echo '$key $value' >> /etc/ssh/sshd_config"
-    SSH_CHANGED=true
-  fi
-}
-
-prompt_default() {
-  local prompt="$1"
-  local default="$2"
-  local result
-  read -rp "$prompt [$default]: " result
-  echo "${result:-$default}"
-}
-
-prompt_yes_no() {
-  local prompt="$1"
-  local default="$2"
-  local result
-  read -rp "$prompt [$default]: " result
-  result="${result:-$default}"
-  [[ "$result" =~ ^[Yy]$ ]]
-}
-
-bool_value() {
-  if prompt_yes_no "$1" "$2"; then
-    echo "yes"
-  else
-    echo "no"
-  fi
-}
-
-validate_number() {
-  local value="$1"
-  local label="$2"
-  [[ "$value" =~ ^[0-9]+$ ]] || fail "$label must be a whole number"
+  echo "Run system updates: $RUN_SYSTEM_UPDATES"
+  echo "Enable unattended security updates: $ENABLE_UNATTENDED_SECURITY_UPDATES"
 }
 
 recommend_swap_size() {
-  local mem_mb
-  local role_lc
+  local mem_mb role_lc
   mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
   role_lc="$(echo "${SERVER_ROLE:-}" | tr '[:upper:]' '[:lower:]')"
-
-  if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then
-    echo "20G"
-  elif (( mem_mb <= 4096 )); then
-    echo "4G"
-  elif (( mem_mb <= 8192 )); then
-    echo "8G"
-  elif (( mem_mb <= 32768 )); then
-    echo "16G"
-  else
-    echo "20G"
-  fi
+  if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then echo "20G"
+  elif (( mem_mb <= 4096 )); then echo "4G"
+  elif (( mem_mb <= 8192 )); then echo "8G"
+  elif (( mem_mb <= 32768 )); then echo "16G"
+  else echo "20G"; fi
 }
 
 configure_swap_choice() {
-  local recommended
-  local choice
+  local recommended choice
   recommended="$(recommend_swap_size)"
-
-  echo
-  echo "Swap file size options:"
+  echo; echo "Swap file size options:"
   echo "1) Auto-recommended based on RAM/server role: $recommended"
   echo "2) Custom size"
   read -rp "Choose option [1-2]: " choice
   choice="${choice:-1}"
-
   case "$choice" in
     1) SWAP_SIZE="$recommended" ;;
     2) SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")" ;;
@@ -309,49 +239,25 @@ configure_swap_choice() {
 }
 
 validate_swap_size() {
-  if [[ ! "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]]; then
-    fail "Invalid swap size format. Examples: 2G, 8G, 20G, 32768M"
-  fi
+  [[ "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]] || fail "Invalid swap size format. Examples: 2G, 8G, 20G, 32768M"
   SWAP_SIZE_BYTES="$(numfmt --from=iec "$SWAP_SIZE")"
   ok "Selected swap size: $SWAP_SIZE ($SWAP_SIZE_BYTES bytes)"
 }
 
 configure_limits_choice() {
   local choice
-  echo
-  echo "System file/process limit profiles:"
+  echo; echo "System file/process limit profiles:"
   echo "1) Conservative  - nofile/nproc 65535,   fs.file-max 1048576"
   echo "2) Recommended   - nofile/nproc 500000,  fs.file-max 2097152"
   echo "3) Max           - nofile/nproc 1048576, fs.file-max 4194304"
   echo "4) Custom"
   read -rp "Choose option [1-4]: " choice
   choice="${choice:-2}"
-
   case "$choice" in
-    1)
-      LIMIT_PROFILE="conservative"
-      LIMIT_VALUE="65535"
-      NPROC_VALUE="65535"
-      FILE_MAX="1048576"
-      ;;
-    2)
-      LIMIT_PROFILE="recommended"
-      LIMIT_VALUE="500000"
-      NPROC_VALUE="500000"
-      FILE_MAX="2097152"
-      ;;
-    3)
-      LIMIT_PROFILE="max"
-      LIMIT_VALUE="1048576"
-      NPROC_VALUE="1048576"
-      FILE_MAX="4194304"
-      ;;
-    4)
-      LIMIT_PROFILE="custom"
-      LIMIT_VALUE="$(prompt_default 'Custom nofile/open files limit' '500000')"
-      NPROC_VALUE="$(prompt_default 'Custom nproc/process limit' "$LIMIT_VALUE")"
-      FILE_MAX="$(prompt_default 'Custom fs.file-max kernel ceiling' '2097152')"
-      ;;
+    1) LIMIT_PROFILE="conservative"; LIMIT_VALUE="65535"; NPROC_VALUE="65535"; FILE_MAX="1048576" ;;
+    2) LIMIT_PROFILE="recommended"; LIMIT_VALUE="500000"; NPROC_VALUE="500000"; FILE_MAX="2097152" ;;
+    3) LIMIT_PROFILE="max"; LIMIT_VALUE="1048576"; NPROC_VALUE="1048576"; FILE_MAX="4194304" ;;
+    4) LIMIT_PROFILE="custom"; LIMIT_VALUE="$(prompt_default 'Custom nofile/open files limit' '500000')"; NPROC_VALUE="$(prompt_default 'Custom nproc/process limit' "$LIMIT_VALUE")"; FILE_MAX="$(prompt_default 'Custom fs.file-max kernel ceiling' '2097152')" ;;
     *) fail "Invalid limits profile option" ;;
   esac
 }
@@ -370,15 +276,13 @@ collect_config() {
   SERVER_ROLE="$(prompt_default 'Server role' "$SERVER_ROLE")"
   SERVER_LOCATION="$(prompt_default 'Provider/location' "$SERVER_LOCATION")"
   ADMIN_USER="$(prompt_default 'Sudo admin username' "$ADMIN_USER")"
-
   [[ -z "$SERVER_HOSTNAME" ]] && fail "Hostname cannot be empty"
   [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"
 
   configure_swap_choice
   configure_limits_choice
 
-  echo
-  echo "SSH key setup options for $ADMIN_USER:"
+  echo; echo "SSH key setup options for $ADMIN_USER:"
   echo "1) Paste public SSH key"
   echo "2) Copy root's existing authorized_keys"
   echo "3) Generate a new SSH keypair on this server"
@@ -393,6 +297,8 @@ collect_config() {
   SET_ADMIN_PASSWORD="$(bool_value "Set a local password for $ADMIN_USER?" "Y")"
   SET_ROOT_PASSWORD="$(bool_value "Set/change the local root password?" "Y")"
   LOCK_ROOT_PASSWORD="$(bool_value "Lock the root password afterward?" "N")"
+  RUN_SYSTEM_UPDATES="$(bool_value "Run safe Ubuntu 22.04 package updates/patches?" "Y")"
+  ENABLE_UNATTENDED_SECURITY_UPDATES="$(bool_value "Enable unattended security updates?" "Y")"
 
   read -rp "Extra TCP ports to allow, comma-separated, blank for none: " EXTRA_TCP_PORTS
   read -rp "Extra UDP ports to allow, comma-separated, blank for none: " EXTRA_UDP_PORTS
@@ -406,6 +312,72 @@ validate_config() {
   validate_limits
 }
 
+set_sshd_option() {
+  local key="$1" value="$2"
+  if grep -Eq "^[#[:space:]]*$key[[:space:]]+" /etc/ssh/sshd_config; then
+    if grep -Eq "^$key[[:space:]]+$value$" /etc/ssh/sshd_config; then ok "SSH $key $value"
+    else change "SSH $key $value"; run "sed -i 's|^[#[:space:]]*$key[[:space:]].*|$key $value|' /etc/ssh/sshd_config"; SSH_CHANGED=true; fi
+  else
+    change "Adding SSH $key $value"; run "echo '$key $value' >> /etc/ssh/sshd_config"; SSH_CHANGED=true
+  fi
+}
+
+configure_release_upgrades() {
+  info "Blocking Ubuntu release upgrades while allowing Ubuntu 22.04 updates"
+  if [[ -f /etc/update-manager/release-upgrades ]]; then
+    backup_file /etc/update-manager/release-upgrades
+    if grep -q '^Prompt=' /etc/update-manager/release-upgrades; then
+      run "sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades"
+    else
+      run "echo 'Prompt=never' >> /etc/update-manager/release-upgrades"
+    fi
+  else
+    run "mkdir -p /etc/update-manager"
+    run "printf '%s\n' '[DEFAULT]' 'Prompt=never' > /etc/update-manager/release-upgrades"
+  fi
+}
+
+configure_unattended_upgrades() {
+  info "Configuring unattended security updates"
+  ensure_package unattended-upgrades
+  ensure_package apt-listchanges
+  local auto_content unattended_content
+  auto_content='APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";'
+  unattended_content='Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";'
+  write_if_changed /etc/apt/apt.conf.d/20auto-upgrades "$auto_content"
+  write_if_changed /etc/apt/apt.conf.d/51baseline-security-upgrades "$unattended_content"
+  run "systemctl enable unattended-upgrades || true"
+  run "systemctl restart unattended-upgrades || true"
+}
+
+run_system_updates() {
+  configure_release_upgrades
+  if [[ "$RUN_SYSTEM_UPDATES" == "yes" ]]; then
+    info "Running safe Ubuntu 22.04 updates and patches"
+    run "apt update -y"
+    run "DEBIAN_FRONTEND=noninteractive apt upgrade -y"
+    run "DEBIAN_FRONTEND=noninteractive apt full-upgrade -y"
+    run "apt autoremove -y"
+    run "apt autoclean -y"
+  else
+    info "Skipping package updates by config"
+    run "apt update -y"
+  fi
+  if [[ "$ENABLE_UNATTENDED_SECURITY_UPDATES" == "yes" ]]; then
+    configure_unattended_upgrades
+  else
+    ok "Unattended security updates not enabled by config"
+  fi
+}
+
 create_verify_script() {
   cat > "$VERIFY_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
@@ -414,15 +386,12 @@ set -euo pipefail
 echo "========================================="
 echo " Ubuntu 22.04 Setup Verification"
 echo "========================================="
+check() { local name="$1" cmd="$2"; echo; echo "---- $name ----"; eval "$cmd" || echo "FAILED: $name"; }
 
-check() {
-  local name="$1"
-  local cmd="$2"
-  echo
-  echo "---- $name ----"
-  eval "$cmd" || echo "FAILED: $name"
-}
-
+check "Ubuntu release" "lsb_release -a 2>/dev/null || cat /etc/os-release"
+check "Release upgrade policy" "grep -E '^Prompt=' /etc/update-manager/release-upgrades || true"
+check "Reboot required" "if [[ -f /var/run/reboot-required ]]; then cat /var/run/reboot-required; else echo 'No reboot-required flag present'; fi"
+check "Unattended upgrades" "systemctl is-enabled unattended-upgrades 2>/dev/null || true; systemctl is-active unattended-upgrades 2>/dev/null || true; cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || true"
 check "Swap" "swapon --show && free -h && grep '/swapfile' /etc/fstab"
 check "Sysctl memory tuning" "sysctl vm.swappiness vm.vfs_cache_pressure vm.dirty_ratio vm.dirty_background_ratio"
 check "Sysctl file/network/kernel tuning" "sysctl fs.file-max fs.inotify.max_user_watches fs.inotify.max_user_instances net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.core.default_qdisc net.ipv4.tcp_congestion_control kernel.panic"
@@ -443,18 +412,16 @@ check "Baseline summary" "cat /root/server-baseline-summary.txt 2>/dev/null || e
 check "Saved configs" "ls -lah /root/system-setup-configs/ 2>/dev/null || echo 'No config folder found'"
 check "Backup folders" "ls -lah /root/system-setup-backups/ 2>/dev/null || echo 'No backup folder found'"
 check "Log folders" "ls -lah /root/system-setup-logs/ 2>/dev/null || echo 'No log folder found'"
-
-echo
-echo "========================================="
-echo " Verification complete"
-echo "========================================="
+echo; echo "========================================="; echo " Verification complete"; echo "========================================="
 EOF
   chmod +x "$VERIFY_SCRIPT"
 }
 
 write_summary() {
-  local ips
+  local ips reboot_status release_prompt
   ips="$(hostname -I 2>/dev/null | xargs || true)"
+  reboot_status="$(if [[ -f /var/run/reboot-required ]]; then echo yes; else echo no; fi)"
+  release_prompt="$(grep -E '^Prompt=' /etc/update-manager/release-upgrades 2>/dev/null || true)"
   cat > "$SUMMARY_FILE" <<EOF
 Ubuntu Server Baseline Summary
 ==============================
@@ -469,35 +436,25 @@ Hostname: $(hostname)
 Server Role: ${SERVER_ROLE:-unknown}
 Provider/Location: ${SERVER_LOCATION:-unknown}
 Admin User: ${ADMIN_USER:-unknown}
-Admin Local Password Selected: ${ADMIN_LOCAL_PASSWORD_SELECTED:-unknown}
-Root Password Change Selected: ${ROOT_PASSWORD_CHANGE_SELECTED:-unknown}
 Desired Swap Size: ${SWAP_SIZE:-unknown}
 Limit Profile: ${LIMIT_PROFILE:-unknown}
 nofile Limit: ${LIMIT_VALUE:-unknown}
 nproc Limit: ${NPROC_VALUE:-unknown}
 fs.file-max: ${FILE_MAX:-unknown}
+Run System Updates: ${RUN_SYSTEM_UPDATES:-unknown}
+Unattended Security Updates: ${ENABLE_UNATTENDED_SECURITY_UPDATES:-unknown}
+Release Upgrade Policy: ${release_prompt:-unknown}
+Reboot Required: $reboot_status
 IP Addresses: $ips
 
 Swap:
 $(swapon --show 2>/dev/null || true)
 
-Memory:
-$(free -h 2>/dev/null || true)
-
 UFW:
 $(ufw status verbose 2>/dev/null || true)
 
-Fail2Ban:
-$(systemctl is-active fail2ban 2>/dev/null || true)
-
 Chrony:
 $(chronyc tracking 2>/dev/null || true)
-
-SSH Key Settings:
-$(grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|UsePAM|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax)' /etc/ssh/sshd_config 2>/dev/null || true)
-
-Sysctl:
-$(sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic 2>/dev/null || true)
 
 Microcode Packages:
 $(dpkg -l 2>/dev/null | awk '/^ii/ && ($2 == "intel-microcode" || $2 == "amd64-microcode") {print $2, $3}' || true)
@@ -509,168 +466,65 @@ Verify Script: $VERIFY_SCRIPT
 EOF
 }
 
+# Start
 echo "========================================="
 echo " $SCRIPT_NAME v$SCRIPT_VERSION"
 echo " Mode: $([[ "$APPLY" == true ]] && echo APPLY || echo DRY-RUN)"
 echo "========================================="
 
-if [[ -n "$CONFIG_FILE" ]]; then
-  load_config "$CONFIG_FILE"
-elif $APPLY; then
-  load_latest_config_if_requested
-fi
-
+if [[ -n "$CONFIG_FILE" ]]; then load_config "$CONFIG_FILE"; elif $APPLY; then load_latest_config_if_requested; fi
 if ! $CONFIG_LOADED; then
-  if ! $APPLY; then
-    warn "Dry-run mode will NOT ask for hidden password entry. Password prompts only run with --apply."
-  fi
+  if ! $APPLY; then warn "Dry-run mode will NOT ask for hidden password entry. Password prompts only run with --apply."; fi
   collect_config
   save_config
 else
   show_config_summary
-  if ! prompt_yes_no "Continue with this loaded configuration?" "Y"; then
-    fail "Aborted by user"
-  fi
+  prompt_yes_no "Continue with this loaded configuration?" "Y" || fail "Aborted by user"
 fi
-
 validate_config
 show_config_summary
 
-if [[ "$(hostname)" != "$SERVER_HOSTNAME" ]]; then
-  run "hostnamectl set-hostname '$SERVER_HOSTNAME'"
-else
-  ok "Hostname already $SERVER_HOSTNAME"
-fi
+[[ "$(hostname)" != "$SERVER_HOSTNAME" ]] && run "hostnamectl set-hostname '$SERVER_HOSTNAME'" || ok "Hostname already $SERVER_HOSTNAME"
 
-info "Updating package index"
-run "apt update -y"
+run_system_updates
 
 info "Installing baseline packages"
-PACKAGES=(
-  htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git
-  net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades
-  needrestart chrony ntpstat logrotate sudo openssh-server
-)
+PACKAGES=(htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate sudo openssh-server)
 for pkg in "${PACKAGES[@]}"; do ensure_package "$pkg"; done
 
-if dpkg -s ntp >/dev/null 2>&1; then
-  run "apt remove -y ntp"
-else
-  ok "ntp package not installed"
-fi
+dpkg -s ntp >/dev/null 2>&1 && run "apt remove -y ntp" || ok "ntp package not installed"
 
 info "Configuring timezone"
-if [[ "$(timedatectl show -p Timezone --value || true)" != "UTC" ]]; then
-  run "timedatectl set-timezone UTC"
-else
-  ok "Timezone already UTC"
-fi
+[[ "$(timedatectl show -p Timezone --value || true)" != "UTC" ]] && run "timedatectl set-timezone UTC" || ok "Timezone already UTC"
 
 info "Creating sudo admin user"
-if id "$ADMIN_USER" >/dev/null 2>&1; then
-  ok "User $ADMIN_USER already exists"
-else
-  run "adduser --disabled-password --gecos '' '$ADMIN_USER'"
-fi
+id "$ADMIN_USER" >/dev/null 2>&1 && ok "User $ADMIN_USER already exists" || run "adduser --disabled-password --gecos '' '$ADMIN_USER'"
 run "usermod -aG sudo '$ADMIN_USER'"
-
-ADMIN_HOME="/home/$ADMIN_USER"
-ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"
-ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
-
-run "mkdir -p '$ADMIN_SSH_DIR'"
-run "touch '$ADMIN_AUTH_KEYS'"
-run "chmod 700 '$ADMIN_SSH_DIR'"
-run "chmod 600 '$ADMIN_AUTH_KEYS'"
-run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
-
+ADMIN_HOME="/home/$ADMIN_USER"; ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"; ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
+run "mkdir -p '$ADMIN_SSH_DIR'"; run "touch '$ADMIN_AUTH_KEYS'"; run "chmod 700 '$ADMIN_SSH_DIR'"; run "chmod 600 '$ADMIN_AUTH_KEYS'"; run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
 case "$SSH_KEY_OPTION" in
-  1)
-    [[ -z "$ADMIN_PUBLIC_KEY" ]] && fail "SSH_KEY_OPTION=1 requires ADMIN_PUBLIC_KEY in config"
-    if grep -Fxq "$ADMIN_PUBLIC_KEY" "$ADMIN_AUTH_KEYS" 2>/dev/null; then
-      ok "SSH key already exists for $ADMIN_USER"
-    else
-      run "echo '$ADMIN_PUBLIC_KEY' >> '$ADMIN_AUTH_KEYS'"
-    fi
-    ;;
-  2)
-    if [[ -f /root/.ssh/authorized_keys ]]; then
-      run "cat /root/.ssh/authorized_keys >> '$ADMIN_AUTH_KEYS'"
-      run "sort -u '$ADMIN_AUTH_KEYS' -o '$ADMIN_AUTH_KEYS'"
-    else
-      fail "/root/.ssh/authorized_keys not found. Use SSH_KEY_OPTION=1 or 3."
-    fi
-    ;;
-  3)
-    KEY_PATH="/root/${ADMIN_USER}_ed25519"
-    if [[ -f "$KEY_PATH" ]]; then
-      ok "Generated key already exists at $KEY_PATH"
-    else
-      run "ssh-keygen -t ed25519 -a 100 -f '$KEY_PATH' -N '' -C '${ADMIN_USER}@${SERVER_HOSTNAME}'"
-      run "cat '${KEY_PATH}.pub' >> '$ADMIN_AUTH_KEYS'"
-    fi
-    warn "Save private key securely from: $KEY_PATH"
-    echo "Connect with: ssh -i ${ADMIN_USER}_ed25519 $ADMIN_USER@SERVER_IP"
-    ;;
+  1) [[ -z "$ADMIN_PUBLIC_KEY" ]] && fail "SSH_KEY_OPTION=1 requires ADMIN_PUBLIC_KEY"; grep -Fxq "$ADMIN_PUBLIC_KEY" "$ADMIN_AUTH_KEYS" 2>/dev/null && ok "SSH key already exists for $ADMIN_USER" || run "echo '$ADMIN_PUBLIC_KEY' >> '$ADMIN_AUTH_KEYS'" ;;
+  2) [[ -f /root/.ssh/authorized_keys ]] || fail "/root/.ssh/authorized_keys not found. Use SSH_KEY_OPTION=1 or 3."; run "cat /root/.ssh/authorized_keys >> '$ADMIN_AUTH_KEYS'"; run "sort -u '$ADMIN_AUTH_KEYS' -o '$ADMIN_AUTH_KEYS'" ;;
+  3) KEY_PATH="/root/${ADMIN_USER}_ed25519"; [[ -f "$KEY_PATH" ]] && ok "Generated key already exists at $KEY_PATH" || { run "ssh-keygen -t ed25519 -a 100 -f '$KEY_PATH' -N '' -C '${ADMIN_USER}@${SERVER_HOSTNAME}'"; run "cat '${KEY_PATH}.pub' >> '$ADMIN_AUTH_KEYS'"; }; warn "Save private key securely from: $KEY_PATH" ;;
   *) fail "Invalid SSH key option: $SSH_KEY_OPTION" ;;
 esac
+run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"; run "chmod 700 '$ADMIN_SSH_DIR'"; run "chmod 600 '$ADMIN_AUTH_KEYS'"
+$APPLY && [[ ! -s "$ADMIN_AUTH_KEYS" ]] && fail "$ADMIN_USER has no SSH authorized_keys. Refusing to disable root SSH."
 
-run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
-run "chmod 700 '$ADMIN_SSH_DIR'"
-run "chmod 600 '$ADMIN_AUTH_KEYS'"
-
-if $APPLY && [[ ! -s "$ADMIN_AUTH_KEYS" ]]; then
-  fail "$ADMIN_USER has no SSH authorized_keys. Refusing to disable root SSH."
-fi
-
-if [[ "$ALLOW_PASSWORDLESS_SUDO" == "yes" ]]; then
-  run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"
-  run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"
-else
-  ok "Normal sudo selected. A local password is recommended for sudo prompts."
-fi
-
-if [[ "$SET_ADMIN_PASSWORD" == "yes" ]]; then
-  ADMIN_LOCAL_PASSWORD_SELECTED="yes"
-  password_prompt "$ADMIN_USER" "$ADMIN_USER"
-else
-  ADMIN_LOCAL_PASSWORD_SELECTED="no"
-  warn "No local password selected for $ADMIN_USER. SSH key login can still work, but console/sudo recovery may be limited."
-fi
-
+[[ "$ALLOW_PASSWORDLESS_SUDO" == "yes" ]] && { run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"; run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"; } || ok "Normal sudo selected"
+[[ "$SET_ADMIN_PASSWORD" == "yes" ]] && { ADMIN_LOCAL_PASSWORD_SELECTED="yes"; password_prompt "$ADMIN_USER" "$ADMIN_USER"; } || { ADMIN_LOCAL_PASSWORD_SELECTED="no"; warn "No local password selected for $ADMIN_USER"; }
 $APPLY && visudo -cf /etc/sudoers
 
 info "Root account security"
-if [[ "$SET_ROOT_PASSWORD" == "yes" ]]; then
-  ROOT_PASSWORD_CHANGE_SELECTED="yes"
-  password_prompt root root
-else
-  ROOT_PASSWORD_CHANGE_SELECTED="no"
-fi
-if [[ "$LOCK_ROOT_PASSWORD" == "yes" ]]; then
-  run "passwd -l root"
-else
-  ok "Root password left enabled for console/recovery use"
-fi
+[[ "$SET_ROOT_PASSWORD" == "yes" ]] && { ROOT_PASSWORD_CHANGE_SELECTED="yes"; password_prompt root root; } || ROOT_PASSWORD_CHANGE_SELECTED="no"
+[[ "$LOCK_ROOT_PASSWORD" == "yes" ]] && run "passwd -l root" || ok "Root password left enabled for console/recovery use"
 
 info "Checking swap"
 CURRENT_SWAP_SIZE="0"
-if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$SWAP_FILE"; then
-  CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"
-fi
-if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then
-  ok "$SWAP_SIZE swap already active and persistent"
-else
-  change "Configuring $SWAP_SIZE swap"
-  backup_file /etc/fstab
-  run "swapoff '$SWAP_FILE' || true"
-  run "rm -f '$SWAP_FILE'"
-  run "sed -i '\|$SWAP_FILE|d' /etc/fstab"
-  run "fallocate -l '$SWAP_SIZE' '$SWAP_FILE'"
-  run "chmod 600 '$SWAP_FILE'"
-  run "mkswap '$SWAP_FILE'"
-  run "swapon '$SWAP_FILE'"
-  run "echo '$SWAP_FILE none swap sw 0 0' >> /etc/fstab"
+if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$SWAP_FILE"; then CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"; fi
+if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then ok "$SWAP_SIZE swap already active and persistent"; else
+  change "Configuring $SWAP_SIZE swap"; backup_file /etc/fstab
+  run "swapoff '$SWAP_FILE' || true"; run "rm -f '$SWAP_FILE'"; run "sed -i '\|$SWAP_FILE|d' /etc/fstab"; run "fallocate -l '$SWAP_SIZE' '$SWAP_FILE'"; run "chmod 600 '$SWAP_FILE'"; run "mkswap '$SWAP_FILE'"; run "swapon '$SWAP_FILE'"; run "echo '$SWAP_FILE none swap sw 0 0' >> /etc/fstab"
 fi
 
 info "Applying sysctl tuning"
@@ -686,8 +540,7 @@ net.ipv4.tcp_max_syn_backlog=8192
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 kernel.panic=10"
-write_if_changed /etc/sysctl.d/99-custom-system-tuning.conf "$SYSCTL_CONTENT"
-run "sysctl --system"
+write_if_changed /etc/sysctl.d/99-custom-system-tuning.conf "$SYSCTL_CONTENT"; run "sysctl --system"
 
 info "Applying security and systemd limits"
 LIMITS_CONTENT="* soft nofile $LIMIT_VALUE
@@ -699,43 +552,19 @@ root hard nofile $LIMIT_VALUE
 root soft nproc $NPROC_VALUE
 root hard nproc $NPROC_VALUE"
 write_if_changed /etc/security/limits.d/99-custom-limits.conf "$LIMITS_CONTENT"
-ensure_line /etc/pam.d/common-session "session required pam_limits.so"
-ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
+ensure_line /etc/pam.d/common-session "session required pam_limits.so"; ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
 SYSTEMD_LIMITS_CONTENT="[Manager]
 DefaultLimitNOFILE=$LIMIT_VALUE
 DefaultLimitNPROC=$NPROC_VALUE"
-write_if_changed /etc/systemd/system.conf.d/99-custom-limits.conf "$SYSTEMD_LIMITS_CONTENT"
-run "systemctl daemon-reexec"
+write_if_changed /etc/systemd/system.conf.d/99-custom-limits.conf "$SYSTEMD_LIMITS_CONTENT"; run "systemctl daemon-reexec"
 
 info "Configuring UFW firewall"
-if ufw status | grep -q "22/tcp"; then
-  ok "UFW already allows SSH port 22"
-else
-  run "ufw allow 22/tcp comment 'SSH'"
-fi
-IFS=',' read -ra TCP_PORTS <<< "$EXTRA_TCP_PORTS"
-for port in "${TCP_PORTS[@]}"; do
-  port="$(echo "$port" | xargs)"
-  [[ -n "$port" ]] && run "ufw allow ${port}/tcp"
-done
-IFS=',' read -ra UDP_PORTS <<< "$EXTRA_UDP_PORTS"
-for port in "${UDP_PORTS[@]}"; do
-  port="$(echo "$port" | xargs)"
-  [[ -n "$port" ]] && run "ufw allow ${port}/udp"
-done
-if ufw status | grep -q "Status: active"; then
-  ok "UFW already active"
-else
-  run "ufw --force enable"
-fi
+ufw status | grep -q "22/tcp" && ok "UFW already allows SSH port 22" || run "ufw allow 22/tcp comment 'SSH'"
+IFS=',' read -ra TCP_PORTS <<< "$EXTRA_TCP_PORTS"; for port in "${TCP_PORTS[@]}"; do port="$(echo "$port" | xargs)"; [[ -n "$port" ]] && run "ufw allow ${port}/tcp"; done
+IFS=',' read -ra UDP_PORTS <<< "$EXTRA_UDP_PORTS"; for port in "${UDP_PORTS[@]}"; do port="$(echo "$port" | xargs)"; [[ -n "$port" ]] && run "ufw allow ${port}/udp"; done
+ufw status | grep -q "Status: active" && ok "UFW already active" || run "ufw --force enable"
 
-info "Configuring Fail2Ban"
-run "systemctl enable fail2ban"
-if systemctl is-active fail2ban >/dev/null 2>&1; then
-  ok "fail2ban already active"
-else
-  run "systemctl start fail2ban"
-fi
+info "Configuring Fail2Ban"; run "systemctl enable fail2ban"; systemctl is-active fail2ban >/dev/null 2>&1 && ok "fail2ban already active" || run "systemctl start fail2ban"
 
 info "Configuring Chrony"
 CHRONY_CONTENT="pool 0.ca.pool.ntp.org iburst maxsources 4
@@ -752,79 +581,23 @@ driftfile /var/lib/chrony/chrony.drift
 makestep 1.0 3
 rtcsync
 logdir /var/log/chrony"
-write_if_changed /etc/chrony/chrony.conf "$CHRONY_CONTENT"
-run "systemctl disable --now systemd-timesyncd || true"
-run "systemctl enable chrony"
-run "systemctl restart chrony"
+write_if_changed /etc/chrony/chrony.conf "$CHRONY_CONTENT"; run "systemctl disable --now systemd-timesyncd || true"; run "systemctl enable chrony"; run "systemctl restart chrony"
 
-info "Hardening SSH"
-backup_file /etc/ssh/sshd_config
-set_sshd_option PermitRootLogin no
-set_sshd_option PasswordAuthentication no
-set_sshd_option PubkeyAuthentication yes
-set_sshd_option KbdInteractiveAuthentication no
-set_sshd_option ChallengeResponseAuthentication no
-set_sshd_option UsePAM yes
-set_sshd_option MaxAuthTries 3
-set_sshd_option ClientAliveInterval 300
-set_sshd_option ClientAliveCountMax 2
-$APPLY && sshd -t
-[[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
+info "Hardening SSH"; backup_file /etc/ssh/sshd_config
+set_sshd_option PermitRootLogin no; set_sshd_option PasswordAuthentication no; set_sshd_option PubkeyAuthentication yes; set_sshd_option KbdInteractiveAuthentication no; set_sshd_option ChallengeResponseAuthentication no; set_sshd_option UsePAM yes; set_sshd_option MaxAuthTries 3; set_sshd_option ClientAliveInterval 300; set_sshd_option ClientAliveCountMax 2
+$APPLY && sshd -t; [[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
 
-info "Enabling SSD/NVMe trim timer"
-systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"
-systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
+info "Enabling SSD/NVMe trim timer"; systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"; systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
 
 info "Installing correct CPU microcode package"
 CPU_VENDOR="$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || true)"
-case "$CPU_VENDOR" in
-  GenuineIntel)
-    remove_package_if_installed amd64-microcode
-    ensure_package intel-microcode
-    ;;
-  AuthenticAMD)
-    remove_package_if_installed intel-microcode
-    ensure_package amd64-microcode
-    ;;
-  *)
-    warn "Unknown CPU vendor '$CPU_VENDOR'. Skipping microcode package cleanup."
-    ;;
-esac
+case "$CPU_VENDOR" in GenuineIntel) remove_package_if_installed amd64-microcode; ensure_package intel-microcode ;; AuthenticAMD) remove_package_if_installed intel-microcode; ensure_package amd64-microcode ;; *) warn "Unknown CPU vendor '$CPU_VENDOR'. Skipping microcode package cleanup." ;; esac
 
 info "Creating verification script"
-if $APPLY; then
-  create_verify_script
-  write_summary
-else
-  echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"
-fi
+if $APPLY; then create_verify_script; write_summary; else echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"; fi
 
-echo
-echo "========================================="
-echo " FINAL STATUS"
-echo "========================================="
-swapon --show || true
-free -h || true
-sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true
-ufw status verbose || true
-systemctl status fail2ban --no-pager || true
-chronyc tracking || true
-timedatectl || true
-sshd -t && echo "SSHD config valid"
-echo "Logs: $LOG_DIR"
-echo "Backups: $BACKUP_DIR"
-echo "Saved config: ${CONFIG_FILE:-$GENERATED_CONFIG_FILE}"
-echo "Summary: $SUMMARY_FILE"
-echo "Verify script: $VERIFY_SCRIPT"
-
-echo
-echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"
-echo "ssh $ADMIN_USER@SERVER_IP"
-echo "sudo whoami"
-echo "Expected result: root"
-
-if prompt_yes_no "Reboot now?" "N"; then
-  run "reboot"
-else
-  echo "Recommended: reboot after first successful apply."
-fi
+echo; echo "========================================="; echo " FINAL STATUS"; echo "========================================="
+swapon --show || true; free -h || true; sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true; ufw status verbose || true; systemctl status fail2ban --no-pager || true; chronyc tracking || true; timedatectl || true; sshd -t && echo "SSHD config valid"; [[ -f /var/run/reboot-required ]] && cat /var/run/reboot-required || echo "No reboot-required flag present"
+echo "Logs: $LOG_DIR"; echo "Backups: $BACKUP_DIR"; echo "Saved config: ${CONFIG_FILE:-$GENERATED_CONFIG_FILE}"; echo "Summary: $SUMMARY_FILE"; echo "Verify script: $VERIFY_SCRIPT"
+echo; echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"; echo "ssh $ADMIN_USER@SERVER_IP"; echo "sudo whoami"; echo "Expected result: root"
+if prompt_yes_no "Reboot now?" "N"; then run "reboot"; else echo "Recommended: reboot after first successful apply, especially if kernel updates were installed."; fi
