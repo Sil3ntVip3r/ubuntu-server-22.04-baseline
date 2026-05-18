@@ -1,5 +1,57 @@
 # Changelog
 
+## v1.5.1
+
+### Fixed
+
+- Fixed generated verification script variable expansion issues.
+- Fixed `$2: unbound variable` verification failures.
+- Verification script now safely executes nested shell checks.
+
+### Security / Safety Improvements
+
+- Removed dangerous automatic microcode package removal behavior.
+- Baseline now avoids accidental removal of kernel meta-packages.
+- Opposite-vendor microcode packages are now WARNED about instead of automatically removed.
+
+### Microcode Safety Change
+
+Previous behavior:
+
+- Intel systems removed `amd64-microcode`
+- AMD systems removed `intel-microcode`
+
+New safer behavior:
+
+- Correct microcode package is installed automatically.
+- Opposite microcode package is left installed unless manually reviewed.
+- Script warns administrators to manually simulate package removal before cleanup.
+
+### Recommended Manual Validation
+
+Example:
+
+```bash
+sudo apt remove --simulate amd64-microcode
+```
+
+or:
+
+```bash
+sudo apt remove --simulate intel-microcode
+```
+
+Only remove the package if NO kernel meta-packages would also be removed.
+
+### Improved
+
+- Safer production deployment behavior.
+- Better kernel package protection.
+- More reliable verification reporting.
+- Improved fleet safety.
+
+---
+
 ## v1.5.0
 
 ### Added
@@ -25,27 +77,6 @@ The baseline now:
 - blocks Ubuntu release upgrades
 - prevents accidental 22.04 -> 24.04 upgrades
 
-### Added Configuration Options
-
-```bash
-RUN_SYSTEM_UPDATES=yes
-ENABLE_UNATTENDED_SECURITY_UPDATES=yes
-```
-
-### Added Verification Checks
-
-- release upgrade policy
-- unattended-upgrades status
-- reboot-required detection
-- Ubuntu release validation
-
-### Improved
-
-- Better production fleet maintenance.
-- Safer long-term patch management.
-- More predictable server lifecycle handling.
-- Improved security maintenance defaults.
-
 ---
 
 ## v1.4.0
@@ -62,32 +93,6 @@ ENABLE_UNATTENDED_SECURITY_UPDATES=yes
 - Added saved configuration tracking to summaries.
 - Added verification checks for saved configs.
 
-### New Configuration Directory
-
-```text
-/root/system-setup-configs/
-```
-
-### New Usage Examples
-
-Dry-run and save config:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh
-```
-
-Apply and reuse latest config:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh --apply
-```
-
-Apply with explicit config:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
-```
-
 ---
 
 ## v1.3.1
@@ -99,16 +104,6 @@ sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-con
 ```text
 ubuntu22-verify.sh: line XX: $2: unbound variable
 ```
-
-- Verification script now properly validates installed packages.
-- Improved generated verification output reliability.
-
-### Improved
-
-- CPU microcode handling now removes the incorrect vendor package.
-- Intel systems now remove `amd64-microcode`.
-- AMD systems now remove `intel-microcode`.
-- Verification summaries now show installed microcode packages.
 
 ---
 
