@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.5.0
+
+### Added
+
+- Safe Ubuntu 22.04 update and patch workflow.
+- Automatic package update routine.
+- Automatic package cleanup.
+- Ubuntu release upgrade blocking.
+- Unattended security updates configuration.
+- Verification checks for release-upgrade policy.
+- Verification checks for unattended-upgrades.
+- Verification checks for reboot-required state.
+- Config options for update management.
+- Summary reporting for update configuration.
+
+### Ubuntu Update Policy
+
+The baseline now:
+
+- installs Ubuntu 22.04 security updates
+- installs Ubuntu 22.04 package updates
+- installs kernel/security patches
+- blocks Ubuntu release upgrades
+- prevents accidental 22.04 -> 24.04 upgrades
+
+### Added Configuration Options
+
+```bash
+RUN_SYSTEM_UPDATES=yes
+ENABLE_UNATTENDED_SECURITY_UPDATES=yes
+```
+
+### Added Verification Checks
+
+- release upgrade policy
+- unattended-upgrades status
+- reboot-required detection
+- Ubuntu release validation
+
+### Improved
+
+- Better production fleet maintenance.
+- Safer long-term patch management.
+- More predictable server lifecycle handling.
+- Improved security maintenance defaults.
+
+---
+
 ## v1.4.0
 
 ### Added
@@ -40,14 +88,6 @@ Apply with explicit config:
 sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
 ```
 
-### Improved
-
-- Better fleet provisioning workflow.
-- Easier repeatable server deployments.
-- Better idempotent provisioning support.
-- Faster multi-server setup.
-- Better operational consistency.
-
 ---
 
 ## v1.3.1
@@ -70,12 +110,6 @@ ubuntu22-verify.sh: line XX: $2: unbound variable
 - AMD systems now remove `intel-microcode`.
 - Verification summaries now show installed microcode packages.
 
-### Security / Stability
-
-- Cleaner CPU microcode management.
-- Reduced unnecessary package overlap.
-- Improved fleet consistency.
-
 ---
 
 ## v1.3.0
@@ -87,12 +121,6 @@ ubuntu22-verify.sh: line XX: $2: unbound variable
 - Dry-run password documentation.
 - Separate admin password handling from passwordless sudo.
 - Password selection tracking in summaries.
-
-### Improved
-
-- Clearer dry-run/apply workflow.
-- Safer password handling design.
-- Better production provisioning workflow.
 
 ---
 
@@ -117,37 +145,8 @@ ubuntu22-verify.sh: line XX: $2: unbound variable
 - Swap validation for G/M suffixes
 - Swap size recorded in server summary
 
-### Auto Swap Recommendations
-
-| Server Type / RAM | Recommended Swap |
-|---|---|
-| Small VPS (<=2GB RAM) | 4G |
-| 4GB RAM | 4G |
-| 8GB RAM | 8G |
-| 16GB-32GB RAM | 16G |
-| Blockchain / Docker / Build / RPC nodes | 20G |
-
 ---
 
 ## v1.0.0
 
 Initial fleet-ready Ubuntu 22.04 baseline.
-
-### Features
-
-- Interactive server provisioning
-- 20GB swap configuration
-- SSH hardening
-- Sudo admin user provisioning
-- SSH key management
-- UFW firewall
-- Fail2Ban
-- Chrony NTP
-- Sysctl tuning
-- File/process limits
-- BBR networking
-- SSD trim timer
-- CPU microcode installation
-- Verification script generation
-- Summary and logging system
-- Convergent/idempotent configuration handling
