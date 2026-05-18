@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.6.3
+
+### Improved
+
+- Improved WireGuard install-only reporting in the generated verification script.
+- Improved WireGuard install-only reporting in the server summary.
+- Verification now explains that no active WireGuard interface is expected when `WIREGUARD_MODE=install-only`.
+- README now documents the microcode safety decision.
+
+### Microcode Decision
+
+The script continues to install the correct CPU microcode package for the detected CPU vendor.
+
+If the opposite-vendor microcode package is also present, the script warns but does not automatically remove it.
+
+Reason:
+
+- keeping both packages is generally harmless
+- the active CPU vendor determines which microcode is actually used
+- removing the opposite package may remove kernel meta-packages on some systems
+- warning-only behavior is safer for production fleet provisioning
+
+---
+
 ## v1.6.2
 
 ### Fixed
@@ -26,20 +50,6 @@
 - Fixed dry-run command wrapper behavior so dry-run returns success cleanly.
 - Added an error trap so future failures print the failing line and command.
 - Fixed the first-run path where the script stopped before creating `/root/ubuntu22-verify.sh`.
-
-### Root Cause
-
-`set -e` treated a missing backup source file as a fatal error. This caused the run to stop while creating new files such as:
-
-```text
-/etc/sysctl.d/99-custom-system-tuning.conf
-```
-
-### Improved
-
-- Better first-run reliability.
-- Clearer troubleshooting output.
-- More reliable verification script generation.
 
 ---
 
