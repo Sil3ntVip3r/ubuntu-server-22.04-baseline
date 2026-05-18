@@ -1,6 +1,6 @@
 # Ubuntu Server 22.04 Baseline
 
-Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, and reusable configuration baseline for:
+Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, reusable configuration, and update-management baseline for:
 
 - VPS infrastructure
 - Blockchain and masternode servers
@@ -14,7 +14,7 @@ Designed for repeatable fleet provisioning with convergent/idempotent configurat
 Current baseline version:
 
 ```text
-v1.4.0
+v1.5.0
 ```
 
 ---
@@ -34,12 +34,14 @@ The setup script interactively prompts for:
 - SSH key setup method
 - Local admin password selection
 - Root password handling
+- Ubuntu update policy
+- Unattended security updates
 - Extra firewall ports
 - Optional reboot
 
 ## Saved Configuration Workflow
 
-Dry-run mode now automatically saves reusable configuration files.
+Dry-run mode automatically saves reusable configuration files.
 
 Configuration directory:
 
@@ -55,6 +57,82 @@ Supports:
 - explicit config loading
 - fleet consistency
 - multi-server provisioning
+
+---
+
+# Ubuntu 22.04 Update Management
+
+The baseline now includes safe Ubuntu 22.04 patch management.
+
+## What It Does
+
+- installs Ubuntu 22.04 security updates
+- installs Ubuntu 22.04 package updates
+- installs kernel/security patches
+- runs package cleanup automatically
+- configures unattended security updates
+- blocks Ubuntu release upgrades
+
+## What It Prevents
+
+The baseline prevents accidental:
+
+- Ubuntu 22.04 -> 24.04 upgrades
+- release-upgrade prompts
+- unattended distro migrations
+
+## Release Upgrade Policy
+
+The script enforces:
+
+```text
+Prompt=never
+```
+
+inside:
+
+```text
+/etc/update-manager/release-upgrades
+```
+
+This allows:
+
+- normal Ubuntu 22.04 updates
+- security patches
+- kernel updates
+
+while blocking:
+
+- major Ubuntu release upgrades
+
+## Safe Update Routine
+
+The baseline safely runs:
+
+```bash
+apt update
+apt upgrade -y
+apt full-upgrade -y
+apt autoremove -y
+apt autoclean -y
+```
+
+## Unattended Security Updates
+
+The baseline can automatically enable:
+
+- security patch downloads
+- unattended security upgrades
+- package cleanup
+
+Automatic rebooting is intentionally disabled by default.
+
+This is safer for:
+
+- blockchain nodes
+- RPC nodes
+- infrastructure servers
+- Docker hosts
 
 ---
 
@@ -107,6 +185,7 @@ Apply mode:
 - writes configurations
 - configures users
 - installs/removes packages
+- installs updates and security patches
 - restarts services when needed
 - securely prompts for passwords using Linux passwd
 
@@ -129,15 +208,6 @@ Example:
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh --apply
-```
-
-The script will prompt:
-
-```text
-Found previous saved configuration:
-/root/system-setup-configs/20260517-183000.conf
-
-Reuse this configuration? [Y/n]
 ```
 
 ## Load Explicit Config
@@ -164,62 +234,11 @@ ALLOW_PASSWORDLESS_SUDO=yes
 SET_ADMIN_PASSWORD=yes
 SET_ROOT_PASSWORD=yes
 LOCK_ROOT_PASSWORD=no
+RUN_SYSTEM_UPDATES=yes
+ENABLE_UNATTENDED_SECURITY_UPDATES=yes
 SSH_KEY_OPTION=2
 EXTRA_TCP_PORTS=16113,80,443
 EXTRA_UDP_PORTS=
-```
-
----
-
-# Swap Management
-
-Supports:
-
-- Auto-recommended swap sizing based on RAM and server role
-- Custom swap sizing
-- Persistent swap configuration
-- Existing swap detection
-- Safe swap rebuild logic
-- Idempotent swap handling
-
-Examples:
-
-```text
-2G
-8G
-20G
-32768M
-```
-
-## Auto Swap Recommendations
-
-| Server Type / RAM | Recommended Swap |
-|---|---:|
-| Small VPS <=2GB RAM | 4G |
-| 4GB RAM | 4G |
-| 8GB RAM | 8G |
-| 16GB-32GB RAM | 16G |
-| Blockchain / Docker / Build / RPC nodes | 20G |
-
----
-
-# System Limits Profiles
-
-The script supports selectable limits profiles:
-
-| Profile | nofile / open files | nproc / processes | fs.file-max |
-|---|---:|---:|---:|
-| Conservative | 65,535 | 65,535 | 1,048,576 |
-| Recommended | 500,000 | 500,000 | 2,097,152 |
-| Max | 1,048,576 | 1,048,576 | 4,194,304 |
-| Custom | User-defined | User-defined | User-defined |
-
-## Recommended Default
-
-For most VPS, blockchain, Docker, and RPC servers:
-
-```text
-Recommended
 ```
 
 ---
@@ -238,22 +257,6 @@ Recommended
 - Reduced SSH authentication attempts
 - SSH keepalive tuning
 
-## Local Password Handling
-
-The script can:
-
-- set a local admin password
-- set/change the root password
-- optionally lock the root password
-
-Local passwords remain useful for:
-
-- console access
-- VPS web consoles
-- recovery mode
-- sudo prompts
-- maintenance operations
-
 ## Firewall and Protection
 
 - UFW firewall
@@ -261,16 +264,19 @@ Local passwords remain useful for:
 - Optional additional TCP/UDP ports
 - Fail2Ban enabled
 
-## Recommended Security Defaults
+## CPU Microcode Handling
 
-Recommended production setup:
+The script automatically installs the correct CPU microcode package and removes the incorrect vendor package.
 
-- Disable root SSH login
-- Disable SSH password authentication
-- Use SSH keys only
-- Set a known local admin password
-- Set a known local root password
-- Do not lock the root password unless alternate recovery access exists
+### Intel CPUs
+
+- installs `intel-microcode`
+- removes `amd64-microcode`
+
+### AMD CPUs
+
+- installs `amd64-microcode`
+- removes `intel-microcode`
 
 ---
 
@@ -296,55 +302,6 @@ The selected limits profile is applied through:
 - PAM session limits
 - systemd manager limits
 - `fs.file-max` sysctl
-
----
-
-# CPU Microcode Handling
-
-The script automatically installs the correct CPU microcode package and removes the incorrect vendor package.
-
-## Intel CPUs
-
-- installs `intel-microcode`
-- removes `amd64-microcode`
-
-## AMD CPUs
-
-- installs `amd64-microcode`
-- removes `intel-microcode`
-
-This improves:
-
-- fleet consistency
-- package cleanliness
-- update consistency
-- verification accuracy
-
----
-
-# Time Synchronization
-
-Uses:
-
-- Chrony
-- UTC timezone
-- North America and Ubuntu NTP pools
-
-Conflicting services removed/disabled:
-
-- legacy `ntp`
-- `systemd-timesyncd`
-
----
-
-# SSD/NVMe Optimization
-
-Includes:
-
-- fstrim timer
-- SSD write tuning
-- NVMe utilities
-- SMART monitoring tools
 
 ---
 
@@ -386,6 +343,10 @@ The verification script is safe to rerun any time.
 
 It validates:
 
+- Ubuntu release version
+- release-upgrade policy
+- unattended-upgrades
+- reboot-required status
 - swap
 - sysctl values
 - firewall
@@ -412,26 +373,12 @@ bash /root/ubuntu22-verify.sh
 ```bash
 swapon --show
 free -h
-ulimit -n
 ufw status verbose
 systemctl status fail2ban --no-pager
 chronyc tracking
 timedatectl
-```
-
----
-
-# Repository Structure
-
-```text
-ubuntu-server-22.04-baseline/
-├── CHANGELOG.md
-├── README.md
-├── docs/
-│   ├── limits.md
-│   └── recovery.md
-├── setup/
-│   └── ubuntu22-system-setup.sh
+cat /etc/update-manager/release-upgrades
+systemctl status unattended-upgrades --no-pager
 ```
 
 ---
@@ -475,7 +422,7 @@ sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-con
 6. Open a second terminal
 7. Verify the new sudo admin SSH login works
 8. Run the generated verification script
-9. Reboot server
+9. Reboot server if updates/kernel changes require it
 10. Rerun verification after reboot
 
 ---
@@ -486,14 +433,4 @@ See:
 
 ```text
 docs/recovery.md
-```
-
----
-
-# Limits Reference
-
-See:
-
-```text
-docs/limits.md
 ```
