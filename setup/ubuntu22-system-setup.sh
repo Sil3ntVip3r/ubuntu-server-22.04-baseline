@@ -4,7 +4,7 @@ set -Eeuo pipefail
 trap 'rc=$?; echo "ERROR: Script failed at line $LINENO while running: $BASH_COMMAND" >&2; exit $rc' ERR
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.6.2"
+SCRIPT_VERSION="1.6.3"
 APPLY=false
 CONFIG_FILE=""
 
@@ -617,7 +617,16 @@ section "WireGuard packages"
 dpkg-query -W -f='${binary:Package} ${Version}\n' wireguard wireguard-tools qrencode 2>/dev/null || true
 
 section "WireGuard interfaces"
-wg show 2>/dev/null || echo 'No active WireGuard interface detected'
+if command -v wg >/dev/null 2>&1; then
+  wg_output="$(wg show 2>/dev/null || true)"
+  if [[ -n "$wg_output" ]]; then
+    printf '%s\n' "$wg_output"
+  else
+    echo 'WireGuard installed; no active interface detected. This is expected when WIREGUARD_MODE=install-only.'
+  fi
+else
+  echo 'WireGuard tools are not installed.'
+fi
 
 section "Installed utility packages"
 dpkg-query -W -f='${binary:Package} ${Version}\n' htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate 2>/dev/null || true
@@ -647,7 +656,15 @@ write_summary(){
   ips="$(hostname -I 2>/dev/null | xargs || true)"
   reboot_status="$(if [[ -f /var/run/reboot-required ]]; then echo yes; else echo no; fi)"
   release_prompt="$(grep -E '^Prompt=' /etc/update-manager/release-upgrades 2>/dev/null || true)"
-  wg_status="$(wg show 2>/dev/null || echo 'No active WireGuard interface detected')"
+  if command -v wg >/dev/null 2>&1; then
+    if wg show 2>/dev/null | grep -q '^interface:'; then
+      wg_status="$(wg show)"
+    else
+      wg_status="WireGuard installed; no active interface detected. This is expected when WIREGUARD_MODE=install-only."
+    fi
+  else
+    wg_status="WireGuard tools are not installed."
+  fi
   cat > "$SUMMARY_FILE" <<EOF
 Ubuntu Server Baseline Summary
 ==============================
