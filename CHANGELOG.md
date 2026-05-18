@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.2
+
+### Fixed
+
+- Fixed generated verifier failure during package checks.
+- Fixed `binary: unbound variable` caused by dpkg format strings being interpreted by Bash.
+- Reworked verifier package checks to use direct `dpkg-query` commands.
+- Added noninteractive `needrestart` behavior to update and install commands where applicable.
+
+### Improved
+
+- More reliable `/root/ubuntu22-verify.sh` execution.
+- Cleaner package verification output.
+- Reduced prompts during package install/update operations.
+
+---
+
 ## v1.6.1
 
 ### Fixed
