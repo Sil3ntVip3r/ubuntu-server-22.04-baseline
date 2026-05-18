@@ -5,46 +5,46 @@ Fleet-ready Ubuntu 22.04 baseline for provisioning, hardening, tuning, verificat
 Current baseline version:
 
 ```text
-v1.6.2
+v1.6.3
 ```
 
 ---
 
-## v1.6.2 Hotfix
+## v1.6.3 Update
 
-This release fixes the generated verifier package-check failure seen after `v1.6.1`.
+This release improves WireGuard reporting and documents the microcode safety decision.
 
-The setup script completed correctly and created:
-
-```text
-/root/ubuntu22-verify.sh
-```
-
-but the verifier could fail during package checks with:
+WireGuard install-only mode now reports clearly in both the server summary and verification script:
 
 ```text
-binary: unbound variable
+WireGuard installed; no active interface detected. This is expected when WIREGUARD_MODE=install-only.
 ```
 
-Fixed in this release:
-
-- verifier package checks now avoid nested Bash expansion problems
-- package verification uses direct `dpkg-query` commands
-- the verifier no longer expands dpkg format strings as shell variables
-- update/install commands use noninteractive `needrestart` behavior where applicable
+This avoids confusion when WireGuard packages are installed but no VPN interface is configured.
 
 ---
 
-## Previous v1.6.1 Fix
+## Microcode Safety
 
-`v1.6.1` fixed the earlier silent-exit issue found during real server testing.
+The script installs the correct CPU microcode package for the detected CPU vendor.
 
-Fixed behavior:
+If the opposite-vendor microcode package is also installed, the script warns but does not remove it automatically.
 
-- missing source files are no longer treated as failed backups
-- dry-run command wrappers return success cleanly
-- script failures print the failing line and command
-- successful apply runs create `/root/ubuntu22-verify.sh`
+Reason:
+
+- Removing the opposite microcode package can sometimes remove kernel meta-packages.
+- Keeping both is generally harmless.
+- The correct CPU microcode is selected by the system for the actual CPU vendor.
+- Leaving both installed is safer than risking kernel package removal.
+
+Manual cleanup should only be done after reviewing a simulated removal:
+
+```bash
+sudo apt remove --simulate amd64-microcode
+sudo apt remove --simulate intel-microcode
+```
+
+Only remove a package if the simulation does not remove kernel meta-packages.
 
 ---
 
@@ -88,7 +88,7 @@ grep SCRIPT_VERSION setup/ubuntu22-system-setup.sh
 Expected:
 
 ```text
-SCRIPT_VERSION="1.6.2"
+SCRIPT_VERSION="1.6.3"
 ```
 
 Run dry-run mode:
@@ -154,7 +154,7 @@ bash /root/ubuntu22-verify.sh
 ## Recommended Workflow
 
 1. Pull the latest repository.
-2. Confirm the script version is `v1.6.2`.
+2. Confirm the script version is `v1.6.3`.
 3. Run apply mode again and reuse the saved config.
 4. Confirm `/root/ubuntu22-verify.sh` exists.
 5. Run verification.
