@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.5.1"
+SCRIPT_VERSION="1.6.0"
 APPLY=false
 CONFIG_FILE=""
 
@@ -52,6 +52,13 @@ SET_ROOT_PASSWORD="yes"
 LOCK_ROOT_PASSWORD="no"
 RUN_SYSTEM_UPDATES="yes"
 ENABLE_UNATTENDED_SECURITY_UPDATES="yes"
+ENABLE_WIREGUARD="no"
+WIREGUARD_MODE="install-only"
+WIREGUARD_INTERFACE="wg0"
+WIREGUARD_PORT="51820"
+WIREGUARD_ADDRESS="10.100.0.1/24"
+WIREGUARD_PEER_PUBLIC_KEY=""
+WIREGUARD_PEER_ALLOWED_IPS=""
 CONFIG_LOADED=false
 SSH_CHANGED=false
 ADMIN_LOCAL_PASSWORD_SELECTED="unknown"
@@ -112,6 +119,13 @@ SET_ROOT_PASSWORD=$(quote_value "$SET_ROOT_PASSWORD")
 LOCK_ROOT_PASSWORD=$(quote_value "$LOCK_ROOT_PASSWORD")
 RUN_SYSTEM_UPDATES=$(quote_value "$RUN_SYSTEM_UPDATES")
 ENABLE_UNATTENDED_SECURITY_UPDATES=$(quote_value "$ENABLE_UNATTENDED_SECURITY_UPDATES")
+ENABLE_WIREGUARD=$(quote_value "$ENABLE_WIREGUARD")
+WIREGUARD_MODE=$(quote_value "$WIREGUARD_MODE")
+WIREGUARD_INTERFACE=$(quote_value "$WIREGUARD_INTERFACE")
+WIREGUARD_PORT=$(quote_value "$WIREGUARD_PORT")
+WIREGUARD_ADDRESS=$(quote_value "$WIREGUARD_ADDRESS")
+WIREGUARD_PEER_PUBLIC_KEY=$(quote_value "$WIREGUARD_PEER_PUBLIC_KEY")
+WIREGUARD_PEER_ALLOWED_IPS=$(quote_value "$WIREGUARD_PEER_ALLOWED_IPS")
 EOF
   chmod 600 "$GENERATED_CONFIG_FILE"
   ok "Saved configuration: $GENERATED_CONFIG_FILE"
@@ -139,6 +153,8 @@ show_config_summary(){
   echo "Lock root password: $LOCK_ROOT_PASSWORD"
   echo "Run system updates: $RUN_SYSTEM_UPDATES"
   echo "Enable unattended security updates: $ENABLE_UNATTENDED_SECURITY_UPDATES"
+  echo "Enable WireGuard: $ENABLE_WIREGUARD"
+  [[ "$ENABLE_WIREGUARD" == yes ]] && echo "WireGuard mode/interface/port/address: $WIREGUARD_MODE / $WIREGUARD_INTERFACE / $WIREGUARD_PORT / $WIREGUARD_ADDRESS"
 }
 
 recommend_swap_size(){
@@ -178,6 +194,38 @@ configure_limits_choice(){
 }
 validate_limits(){ validate_number "$LIMIT_VALUE" "nofile limit"; validate_number "$NPROC_VALUE" "nproc limit"; validate_number "$FILE_MAX" "fs.file-max"; ok "Selected limits profile: $LIMIT_PROFILE"; ok "nofile=$LIMIT_VALUE nproc=$NPROC_VALUE fs.file-max=$FILE_MAX"; }
 
+configure_wireguard_choice(){
+  echo
+  ENABLE_WIREGUARD="$(bool_value "Install WireGuard VPN support?" "N")"
+  [[ "$ENABLE_WIREGUARD" != yes ]] && return 0
+  echo "WireGuard options:"
+  echo "1) Install package only"
+  echo "2) Install + create simple server config"
+  read -rp "Choose option [1-2]: " wg_choice
+  wg_choice="${wg_choice:-1}"
+  case "$wg_choice" in
+    1) WIREGUARD_MODE="install-only" ;;
+    2) WIREGUARD_MODE="server" ;;
+    *) fail "Invalid WireGuard option" ;;
+  esac
+  WIREGUARD_INTERFACE="$(prompt_default 'WireGuard interface' "$WIREGUARD_INTERFACE")"
+  WIREGUARD_PORT="$(prompt_default 'WireGuard UDP port' "$WIREGUARD_PORT")"
+  if [[ "$WIREGUARD_MODE" == server ]]; then
+    WIREGUARD_ADDRESS="$(prompt_default 'WireGuard server VPN address/CIDR' "$WIREGUARD_ADDRESS")"
+    if prompt_yes_no "Add one initial WireGuard peer public key now?" "N"; then
+      read -rp "Peer public key: " WIREGUARD_PEER_PUBLIC_KEY
+      WIREGUARD_PEER_ALLOWED_IPS="$(prompt_default 'Peer allowed IPs, example 10.100.0.2/32' '10.100.0.2/32')"
+    fi
+  fi
+}
+validate_wireguard(){
+  [[ "$ENABLE_WIREGUARD" != yes ]] && return 0
+  [[ "$WIREGUARD_INTERFACE" =~ ^[a-zA-Z0-9_.-]+$ ]] || fail "Invalid WireGuard interface name"
+  validate_number "$WIREGUARD_PORT" "WireGuard port"
+  if (( WIREGUARD_PORT < 1 || WIREGUARD_PORT > 65535 )); then fail "WireGuard port must be between 1 and 65535"; fi
+  [[ "$WIREGUARD_MODE" == install-only || "$WIREGUARD_MODE" == server ]] || fail "Invalid WireGuard mode"
+}
+
 collect_config(){
   info "Server identity"
   SERVER_HOSTNAME="$(prompt_default 'Server hostname' "$(hostname)")"
@@ -196,10 +244,11 @@ collect_config(){
   LOCK_ROOT_PASSWORD="$(bool_value "Lock the root password afterward?" "N")"
   RUN_SYSTEM_UPDATES="$(bool_value "Run safe Ubuntu 22.04 package updates/patches?" "Y")"
   ENABLE_UNATTENDED_SECURITY_UPDATES="$(bool_value "Enable unattended security updates?" "Y")"
+  configure_wireguard_choice
   read -rp "Extra TCP ports to allow, comma-separated, blank for none: " EXTRA_TCP_PORTS
   read -rp "Extra UDP ports to allow, comma-separated, blank for none: " EXTRA_UDP_PORTS
 }
-validate_config(){ [[ -z "$SERVER_HOSTNAME" ]] && SERVER_HOSTNAME="$(hostname)"; [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"; [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="$(recommend_swap_size)"; validate_swap_size; validate_limits; }
+validate_config(){ [[ -z "$SERVER_HOSTNAME" ]] && SERVER_HOSTNAME="$(hostname)"; [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"; [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="$(recommend_swap_size)"; validate_swap_size; validate_limits; validate_wireguard; }
 
 password_prompt(){ local u="$1" label="$2"; if $APPLY; then echo "Password prompt for $label will run now. Input will not be shown."; passwd "$u"; else echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."; fi; }
 set_sshd_option(){ local k="$1" v="$2"; if grep -Eq "^[#[:space:]]*$k[[:space:]]+" /etc/ssh/sshd_config; then if grep -Eq "^$k[[:space:]]+$v$" /etc/ssh/sshd_config; then ok "SSH $k $v"; else change "SSH $k $v"; run "sed -i 's|^[#[:space:]]*$k[[:space:]].*|$k $v|' /etc/ssh/sshd_config"; SSH_CHANGED=true; fi; else change "Adding SSH $k $v"; run "echo '$k $v' >> /etc/ssh/sshd_config"; SSH_CHANGED=true; fi; }
@@ -236,8 +285,59 @@ configure_microcode(){
     AuthenticAMD) ensure_package amd64-microcode; opposite=intel-microcode;;
     *) warn "Unknown CPU vendor '$vendor'. Skipping microcode package cleanup."; return 0;;
   esac
-  if dpkg -s "$opposite" >/dev/null 2>&1; then
-    warn "$opposite is installed but will NOT be auto-removed because apt may remove kernel meta-packages with it. Review manually after confirming apt remove simulation."
+  if dpkg -s "$opposite" >/dev/null 2>&1; then warn "$opposite is installed but will NOT be auto-removed because apt may remove kernel meta-packages with it. Review manually after confirming apt remove simulation."; fi
+}
+
+configure_wireguard(){
+  [[ "$ENABLE_WIREGUARD" != yes ]] && return 0
+  info "Configuring WireGuard"
+  ensure_package wireguard
+  ensure_package wireguard-tools
+  ensure_package qrencode
+  run "mkdir -p /etc/wireguard"
+  run "chmod 700 /etc/wireguard"
+  if [[ "$WIREGUARD_MODE" == "install-only" ]]; then
+    ok "WireGuard packages selected for install only"
+    return 0
+  fi
+  local key_file pub_file conf_file private_key peer_block
+  key_file="/etc/wireguard/${WIREGUARD_INTERFACE}.key"
+  pub_file="/etc/wireguard/${WIREGUARD_INTERFACE}.pub"
+  conf_file="/etc/wireguard/${WIREGUARD_INTERFACE}.conf"
+  if $APPLY; then
+    if [[ ! -f "$key_file" ]]; then
+      umask 077
+      wg genkey > "$key_file"
+      wg pubkey < "$key_file" > "$pub_file"
+      chmod 600 "$key_file" "$pub_file"
+    else
+      ok "WireGuard private key already exists: $key_file"
+      [[ -f "$pub_file" ]] || wg pubkey < "$key_file" > "$pub_file"
+    fi
+    private_key="$(cat "$key_file")"
+  else
+    private_key="DRY_RUN_PRIVATE_KEY_NOT_GENERATED"
+  fi
+  peer_block=""
+  if [[ -n "$WIREGUARD_PEER_PUBLIC_KEY" && -n "$WIREGUARD_PEER_ALLOWED_IPS" ]]; then
+    peer_block="
+[Peer]
+PublicKey = $WIREGUARD_PEER_PUBLIC_KEY
+AllowedIPs = $WIREGUARD_PEER_ALLOWED_IPS"
+  fi
+  write_if_changed "$conf_file" "[Interface]
+Address = $WIREGUARD_ADDRESS
+ListenPort = $WIREGUARD_PORT
+PrivateKey = $private_key$peer_block"
+  run "chmod 600 '$conf_file'"
+  run "ufw allow ${WIREGUARD_PORT}/udp comment 'WireGuard ${WIREGUARD_INTERFACE}'"
+  run "systemctl enable wg-quick@${WIREGUARD_INTERFACE}"
+  run "systemctl restart wg-quick@${WIREGUARD_INTERFACE}"
+  if $APPLY; then
+    ok "WireGuard public key: $(cat "$pub_file")"
+    ok "WireGuard config: $conf_file"
+  else
+    ok "Dry-run: would generate WireGuard keys and config at $conf_file"
   fi
 }
 
@@ -270,6 +370,8 @@ check "Fail2Ban" "systemctl is-enabled fail2ban && systemctl is-active fail2ban 
 check "SSH config" "sshd -t && grep -E '^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication|UsePAM|MaxAuthTries|ClientAliveInterval|ClientAliveCountMax)' /etc/ssh/sshd_config"
 check "fstrim timer" "systemctl is-enabled fstrim.timer && systemctl is-active fstrim.timer && systemctl list-timers fstrim.timer --no-pager"
 check "CPU microcode packages" "dpkg-query -W -f='\\${binary:Package} \\${Version}\\n' intel-microcode amd64-microcode 2>/dev/null || true"
+check "WireGuard packages" "dpkg-query -W -f='\\${binary:Package} \\${Version}\\n' wireguard wireguard-tools qrencode 2>/dev/null || true"
+check "WireGuard interfaces" "wg show 2>/dev/null || echo 'No active WireGuard interface detected'"
 check "Installed utility packages" "dpkg-query -W -f='\\${binary:Package} \\${Version}\\n' htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate 2>/dev/null || true"
 check "Baseline summary" "cat /root/server-baseline-summary.txt 2>/dev/null || echo 'No summary file found'"
 check "Saved configs" "ls -lah /root/system-setup-configs/ 2>/dev/null || echo 'No config folder found'"
@@ -281,10 +383,11 @@ EOF
 }
 
 write_summary(){
-  local ips reboot_status release_prompt
+  local ips reboot_status release_prompt wg_status
   ips="$(hostname -I 2>/dev/null | xargs || true)"
   reboot_status="$(if [[ -f /var/run/reboot-required ]]; then echo yes; else echo no; fi)"
   release_prompt="$(grep -E '^Prompt=' /etc/update-manager/release-upgrades 2>/dev/null || true)"
+  wg_status="$(wg show 2>/dev/null || echo 'No active WireGuard interface detected')"
   cat > "$SUMMARY_FILE" <<EOF
 Ubuntu Server Baseline Summary
 ==============================
@@ -308,6 +411,10 @@ Run System Updates: ${RUN_SYSTEM_UPDATES:-unknown}
 Unattended Security Updates: ${ENABLE_UNATTENDED_SECURITY_UPDATES:-unknown}
 Release Upgrade Policy: ${release_prompt:-unknown}
 Reboot Required: $reboot_status
+WireGuard Enabled: ${ENABLE_WIREGUARD:-unknown}
+WireGuard Mode: ${WIREGUARD_MODE:-unknown}
+WireGuard Interface: ${WIREGUARD_INTERFACE:-unknown}
+WireGuard Port: ${WIREGUARD_PORT:-unknown}
 IP Addresses: $ips
 
 Swap:
@@ -321,6 +428,9 @@ $(chronyc tracking 2>/dev/null || true)
 
 Microcode Packages:
 $(microcode_report)
+
+WireGuard:
+$wg_status
 
 Logs: $LOG_DIR
 Backups: $BACKUP_DIR
@@ -429,11 +539,12 @@ $APPLY && sshd -t; [[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
 
 info "Enabling SSD/NVMe trim timer"; systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"; systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
 configure_microcode
+configure_wireguard
 
 info "Creating verification script"; if $APPLY; then create_verify_script; write_summary; else echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"; fi
 
 echo; echo "========================================="; echo " FINAL STATUS"; echo "========================================="
-swapon --show || true; free -h || true; sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true; ufw status verbose || true; systemctl status fail2ban --no-pager || true; command -v chronyc >/dev/null 2>&1 && chronyc tracking || true; timedatectl || true; sshd -t && echo "SSHD config valid"; [[ -f /var/run/reboot-required ]] && cat /var/run/reboot-required || echo "No reboot-required flag present"
+swapon --show || true; free -h || true; sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true; ufw status verbose || true; systemctl status fail2ban --no-pager || true; command -v chronyc >/dev/null 2>&1 && chronyc tracking || true; timedatectl || true; command -v wg >/dev/null 2>&1 && wg show || true; sshd -t && echo "SSHD config valid"; [[ -f /var/run/reboot-required ]] && cat /var/run/reboot-required || echo "No reboot-required flag present"
 echo "Logs: $LOG_DIR"; echo "Backups: $BACKUP_DIR"; echo "Saved config: ${CONFIG_FILE:-$GENERATED_CONFIG_FILE}"; echo "Summary: $SUMMARY_FILE"; echo "Verify script: $VERIFY_SCRIPT"
 echo; echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"; echo "ssh $ADMIN_USER@SERVER_IP"; echo "sudo whoami"; echo "Expected result: root"
 prompt_yes_no "Reboot now?" "N" && run "reboot" || echo "Recommended: reboot after first successful apply, especially if kernel updates were installed."
