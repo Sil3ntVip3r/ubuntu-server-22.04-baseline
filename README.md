@@ -1,6 +1,6 @@
 # Ubuntu Server 22.04 Baseline
 
-Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, reusable configuration, and update-management baseline for:
+Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, reusable configuration, update-management, and optional WireGuard VPN baseline for:
 
 - VPS infrastructure
 - Blockchain and masternode servers
@@ -14,7 +14,7 @@ Designed for repeatable fleet provisioning with convergent/idempotent configurat
 Current baseline version:
 
 ```text
-v1.5.0
+v1.6.0
 ```
 
 ---
@@ -36,33 +36,90 @@ The setup script interactively prompts for:
 - Root password handling
 - Ubuntu update policy
 - Unattended security updates
+- Optional WireGuard VPN support
 - Extra firewall ports
 - Optional reboot
 
-## Saved Configuration Workflow
+---
 
-Dry-run mode automatically saves reusable configuration files.
+# WireGuard VPN Support
 
-Configuration directory:
+Optional WireGuard VPN support is now integrated directly into the baseline.
+
+Reference:
+
+urlWireGuard Official Sitehttps://www.wireguard.com/install/
+
+## Supported Modes
+
+### Install Only
+
+Installs:
+
+- wireguard
+- wireguard-tools
+- qrencode
+
+without creating VPN configuration.
+
+### Simple Server Mode
+
+Automatically:
+
+- generates WireGuard keys
+- creates server config
+- configures UFW UDP port
+- enables wg-quick service
+- creates VPN interface
+- stores configs securely
+
+## WireGuard Security Design
+
+The baseline intentionally:
+
+- never stores WireGuard private keys in reusable config files
+- generates keys locally on the server
+- stores configs with restrictive permissions
+- avoids logging private key material
+
+## Default WireGuard Settings
+
+| Setting | Default |
+|---|---|
+| Interface | wg0 |
+| UDP Port | 51820 |
+| VPN Address | 10.100.0.1/24 |
+
+## Future Fleet Benefits
+
+WireGuard support enables:
+
+- private inter-server networking
+- private RPC infrastructure
+- VPN-only SSH access
+- hidden backend services
+- encrypted management traffic
+- future mesh networking
+
+## WireGuard Files
 
 ```text
-/root/system-setup-configs/
+/etc/wireguard/
 ```
 
-Supports:
+Generated files:
 
-- reusable provisioning configs
-- repeatable deployments
-- apply-mode config reuse
-- explicit config loading
-- fleet consistency
-- multi-server provisioning
+```text
+wg0.conf
+wg0.key
+wg0.pub
+```
 
 ---
 
 # Ubuntu 22.04 Update Management
 
-The baseline now includes safe Ubuntu 22.04 patch management.
+The baseline includes safe Ubuntu 22.04 patch management.
 
 ## What It Does
 
@@ -95,151 +152,26 @@ inside:
 /etc/update-manager/release-upgrades
 ```
 
-This allows:
-
-- normal Ubuntu 22.04 updates
-- security patches
-- kernel updates
-
-while blocking:
-
-- major Ubuntu release upgrades
-
-## Safe Update Routine
-
-The baseline safely runs:
-
-```bash
-apt update
-apt upgrade -y
-apt full-upgrade -y
-apt autoremove -y
-apt autoclean -y
-```
-
-## Unattended Security Updates
-
-The baseline can automatically enable:
-
-- security patch downloads
-- unattended security upgrades
-- package cleanup
-
-Automatic rebooting is intentionally disabled by default.
-
-This is safer for:
-
-- blockchain nodes
-- RPC nodes
-- infrastructure servers
-- Docker hosts
-
 ---
 
-# Dry-Run vs Apply Mode
+# Saved Configuration Workflow
 
-## Dry-Run Mode
+Dry-run mode automatically saves reusable configuration files.
 
-Run:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh
-```
-
-Dry-run mode:
-
-- shows planned actions
-- validates logic
-- validates configuration choices
-- previews changes
-- saves reusable configuration files
-- does NOT modify the system
-- does NOT restart services
-- does NOT create users
-- does NOT write configs
-- does NOT prompt for hidden password entry
-
-Password prompts are intentionally skipped during dry-run mode.
-
-Example:
+Configuration directory:
 
 ```text
-DRY-RUN: Would securely prompt to set/change password during --apply mode.
+/root/system-setup-configs/
 ```
 
-This is expected behavior and not an error.
+Supports:
 
-## Apply Mode
-
-Run:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh --apply
-```
-
-Apply mode:
-
-- can reuse latest saved config
-- can load explicit config files
-- performs system changes
-- writes configurations
-- configures users
-- installs/removes packages
-- installs updates and security patches
-- restarts services when needed
-- securely prompts for passwords using Linux passwd
-
-Passwords are:
-
-- never logged
-- never echoed
-- never stored in variables
-- never written to disk by the script
-
----
-
-# Configuration Reuse
-
-## Reuse Latest Config
-
-When running apply mode, the script can automatically reuse the most recent saved config.
-
-Example:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh --apply
-```
-
-## Load Explicit Config
-
-Example:
-
-```bash
-sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
-```
-
-## Example Config File
-
-```bash
-SERVER_HOSTNAME=node01
-SERVER_ROLE=rpc-node
-SERVER_LOCATION=OVH-Canada
-ADMIN_USER=admin
-SWAP_SIZE=20G
-LIMIT_PROFILE=recommended
-LIMIT_VALUE=500000
-NPROC_VALUE=500000
-FILE_MAX=2097152
-ALLOW_PASSWORDLESS_SUDO=yes
-SET_ADMIN_PASSWORD=yes
-SET_ROOT_PASSWORD=yes
-LOCK_ROOT_PASSWORD=no
-RUN_SYSTEM_UPDATES=yes
-ENABLE_UNATTENDED_SECURITY_UPDATES=yes
-SSH_KEY_OPTION=2
-EXTRA_TCP_PORTS=16113,80,443
-EXTRA_UDP_PORTS=
-```
+- reusable provisioning configs
+- repeatable deployments
+- apply-mode config reuse
+- explicit config loading
+- fleet consistency
+- multi-server provisioning
 
 ---
 
@@ -252,7 +184,6 @@ EXTRA_UDP_PORTS=
 - SSH key authentication enabled
 - Configurable sudo admin user
 - Public key paste, root key copy, or generated keypair options
-- SSH session hardening
 - SSH config validation before restart
 - Reduced SSH authentication attempts
 - SSH keepalive tuning
@@ -263,20 +194,42 @@ EXTRA_UDP_PORTS=
 - SSH port 22 automatically opened before firewall enablement
 - Optional additional TCP/UDP ports
 - Fail2Ban enabled
+- Optional WireGuard UDP port support
 
-## CPU Microcode Handling
+## CPU Microcode Safety
 
-The script automatically installs the correct CPU microcode package and removes the incorrect vendor package.
+The baseline now safely handles microcode installation.
 
-### Intel CPUs
+### Current Behavior
+
+- installs the correct vendor microcode package
+- DOES NOT automatically remove opposite-vendor microcode packages
+- prevents accidental kernel meta-package removal
+
+### Example
+
+Intel CPU:
 
 - installs `intel-microcode`
-- removes `amd64-microcode`
+- warns if `amd64-microcode` exists
 
-### AMD CPUs
+AMD CPU:
 
 - installs `amd64-microcode`
-- removes `intel-microcode`
+- warns if `intel-microcode` exists
+
+### Why
+
+Removing the opposite package can sometimes remove:
+
+- linux-generic
+- linux-image-generic
+- kernel meta-packages
+
+The safer approach is:
+
+- install correct package automatically
+- manually review removals later
 
 ---
 
@@ -339,9 +292,7 @@ Automatically generates:
 /root/ubuntu22-verify.sh
 ```
 
-The verification script is safe to rerun any time.
-
-It validates:
+The verification script validates:
 
 - Ubuntu release version
 - release-upgrade policy
@@ -355,6 +306,8 @@ It validates:
 - SSH settings
 - PAM limits
 - systemd limits
+- WireGuard installation
+- WireGuard interfaces
 - installed packages
 - microcode packages
 - saved configs
@@ -366,19 +319,6 @@ It validates:
 
 ```bash
 bash /root/ubuntu22-verify.sh
-```
-
-## Useful Manual Checks
-
-```bash
-swapon --show
-free -h
-ufw status verbose
-systemctl status fail2ban --no-pager
-chronyc tracking
-timedatectl
-cat /etc/update-manager/release-upgrades
-systemctl status unattended-upgrades --no-pager
 ```
 
 ---
@@ -422,15 +362,22 @@ sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-con
 6. Open a second terminal
 7. Verify the new sudo admin SSH login works
 8. Run the generated verification script
-9. Reboot server if updates/kernel changes require it
-10. Rerun verification after reboot
+9. Verify WireGuard if enabled
+10. Reboot server if updates/kernel changes require it
+11. Rerun verification after reboot
 
 ---
 
-# Recovery
+# Documentation
 
-See:
+Recovery guide:
 
 ```text
 docs/recovery.md
+```
+
+WireGuard guide:
+
+```text
+docs/wireguard.md
 ```
