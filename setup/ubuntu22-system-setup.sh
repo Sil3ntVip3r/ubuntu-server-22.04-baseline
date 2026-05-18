@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'rc=$?; echo "ERROR: Script failed at line $LINENO while running: $BASH_COMMAND" >&2; exit $rc' ERR
 
 SCRIPT_NAME="ubuntu22-system-setup"
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.6.1"
 APPLY=false
 CONFIG_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --apply) APPLY=true; shift ;;
+    --apply)
+      APPLY=true
+      shift
+      ;;
     --config)
       CONFIG_FILE="${2:-}"
-      [[ -z "$CONFIG_FILE" ]] && { echo "ERROR: --config requires a file path"; exit 1; }
+      [[ -n "$CONFIG_FILE" ]] || { echo "ERROR: --config requires a file path"; exit 1; }
       shift 2
       ;;
     -h|--help)
       echo "Usage: sudo bash setup/ubuntu22-system-setup.sh [--apply] [--config /path/to/config.conf]"
       exit 0
       ;;
-    *) echo "ERROR: Unknown option: $1"; exit 1 ;;
+    *)
+      echo "ERROR: Unknown option: $1"
+      exit 1
+      ;;
   esac
 done
 
@@ -64,7 +72,11 @@ SSH_CHANGED=false
 ADMIN_LOCAL_PASSWORD_SELECTED="unknown"
 ROOT_PASSWORD_CHANGE_SELECTED="unknown"
 
-[[ $EUID -ne 0 ]] && { echo "Run as root: sudo bash $0 --apply"; exit 1; }
+if [[ $EUID -ne 0 ]]; then
+  echo "Run as root: sudo bash $0 --apply"
+  exit 1
+fi
+
 mkdir -p "$LOG_DIR" "$BACKUP_DIR" "$CONFIG_DIR"
 exec > >(tee -a "$LOG_DIR/console.log") 2>&1
 
@@ -73,28 +85,104 @@ ok(){ echo "OK: $*"; }
 change(){ echo "CHANGE: $*"; }
 warn(){ echo "WARNING: $*"; }
 fail(){ echo "ERROR: $*"; exit 1; }
-run(){ echo "+ $*"; $APPLY && eval "$@"; }
-quote_value(){ printf '%q' "$1"; }
 
-backup_file(){ local f="$1"; [[ -f "$f" ]] && run "cp -a '$f' '$BACKUP_DIR/'"; }
-write_if_changed(){
-  local f="$1" c="$2"
-  if [[ -f "$f" ]] && cmp -s "$f" <(printf "%s\n" "$c"); then ok "$f already matches desired config"
+run(){
+  echo "+ $*"
+  if $APPLY; then
+    eval "$@"
   else
-    change "Updating $f"; backup_file "$f"
-    if $APPLY; then mkdir -p "$(dirname "$f")"; printf "%s\n" "$c" > "$f"; fi
+    return 0
   fi
 }
-ensure_package(){ local p="$1"; dpkg -s "$p" >/dev/null 2>&1 && ok "Package installed: $p" || run "apt install -y '$p'"; }
-ensure_line(){
-  local f="$1" l="$2"
-  if grep -Fxq "$l" "$f" 2>/dev/null; then ok "$l exists in $f"
-  else change "Adding line to $f: $l"; backup_file "$f"; run "echo '$l' >> '$f'"; fi
+
+quote_value(){ printf '%q' "$1"; }
+
+backup_file(){
+  local f="$1"
+  if [[ -f "$f" ]]; then
+    run "cp -a '$f' '$BACKUP_DIR/'"
+  else
+    ok "No existing file to back up: $f"
+  fi
+  return 0
 }
-prompt_default(){ local p="$1" d="$2" r; read -rp "$p [$d]: " r; echo "${r:-$d}"; }
-prompt_yes_no(){ local p="$1" d="$2" r; read -rp "$p [$d]: " r; r="${r:-$d}"; [[ "$r" =~ ^[Yy]$ ]]; }
-bool_value(){ prompt_yes_no "$1" "$2" && echo yes || echo no; }
-validate_number(){ [[ "$1" =~ ^[0-9]+$ ]] || fail "$2 must be a whole number"; }
+
+write_if_changed(){
+  local f="$1"
+  local c="$2"
+  if [[ -f "$f" ]] && cmp -s "$f" <(printf "%s\n" "$c"); then
+    ok "$f already matches desired config"
+  else
+    change "Updating $f"
+    backup_file "$f"
+    if $APPLY; then
+      mkdir -p "$(dirname "$f")"
+      printf "%s\n" "$c" > "$f"
+    fi
+  fi
+  return 0
+}
+
+ensure_package(){
+  local p="$1"
+  if dpkg -s "$p" >/dev/null 2>&1; then
+    ok "Package installed: $p"
+  else
+    run "DEBIAN_FRONTEND=noninteractive apt-get install -y '$p'"
+  fi
+}
+
+remove_package_if_installed(){
+  local p="$1"
+  if dpkg -s "$p" >/dev/null 2>&1; then
+    run "DEBIAN_FRONTEND=noninteractive apt-get remove -y '$p'"
+  else
+    ok "Package not installed: $p"
+  fi
+}
+
+ensure_line(){
+  local f="$1"
+  local l="$2"
+  if grep -Fxq "$l" "$f" 2>/dev/null; then
+    ok "$l exists in $f"
+  else
+    change "Adding line to $f: $l"
+    backup_file "$f"
+    run "mkdir -p '$(dirname "$f")'"
+    run "touch '$f'"
+    run "grep -Fxq '$l' '$f' || echo '$l' >> '$f'"
+  fi
+}
+
+prompt_default(){
+  local p="$1"
+  local d="$2"
+  local r
+  read -rp "$p [$d]: " r
+  echo "${r:-$d}"
+}
+
+prompt_yes_no(){
+  local p="$1"
+  local d="$2"
+  local r
+  read -rp "$p [$d]: " r
+  r="${r:-$d}"
+  [[ "$r" =~ ^[Yy]$ ]]
+}
+
+bool_value(){
+  if prompt_yes_no "$1" "$2"; then
+    echo yes
+  else
+    echo no
+  fi
+}
+
+validate_number(){
+  [[ "$1" =~ ^[0-9]+$ ]] || fail "$2 must be a whole number"
+}
 
 save_config(){
   cat > "$GENERATED_CONFIG_FILE" <<EOF
@@ -130,11 +218,33 @@ EOF
   chmod 600 "$GENERATED_CONFIG_FILE"
   ok "Saved configuration: $GENERATED_CONFIG_FILE"
 }
-load_config(){ local f="$1"; [[ -f "$f" ]] || fail "Config file not found: $f"; source "$f"; CONFIG_LOADED=true; CONFIG_FILE="$f"; ok "Loaded configuration: $CONFIG_FILE"; }
-load_latest_config_if_requested(){ local latest; latest="$(ls -1t "$CONFIG_DIR"/*.conf 2>/dev/null | head -n1 || true)"; [[ -z "$latest" ]] && return 0; echo; echo "Found previous saved configuration:"; echo "$latest"; prompt_yes_no "Reuse this configuration?" "Y" && load_config "$latest"; }
+
+load_config(){
+  local f="$1"
+  [[ -f "$f" ]] || fail "Config file not found: $f"
+  # shellcheck disable=SC1090
+  source "$f"
+  CONFIG_LOADED=true
+  CONFIG_FILE="$f"
+  ok "Loaded configuration: $CONFIG_FILE"
+}
+
+load_latest_config_if_requested(){
+  local latest
+  latest="$(ls -1t "$CONFIG_DIR"/*.conf 2>/dev/null | head -n1 || true)"
+  [[ -z "$latest" ]] && return 0
+  echo
+  echo "Found previous saved configuration:"
+  echo "$latest"
+  if prompt_yes_no "Reuse this configuration?" "Y"; then
+    load_config "$latest"
+  fi
+}
 
 show_config_summary(){
-  echo; echo "Configuration Summary"; echo "---------------------"
+  echo
+  echo "Configuration Summary"
+  echo "---------------------"
   echo "Hostname: $SERVER_HOSTNAME"
   echo "Role: $SERVER_ROLE"
   echo "Provider/location: $SERVER_LOCATION"
@@ -154,45 +264,83 @@ show_config_summary(){
   echo "Run system updates: $RUN_SYSTEM_UPDATES"
   echo "Enable unattended security updates: $ENABLE_UNATTENDED_SECURITY_UPDATES"
   echo "Enable WireGuard: $ENABLE_WIREGUARD"
-  [[ "$ENABLE_WIREGUARD" == yes ]] && echo "WireGuard mode/interface/port/address: $WIREGUARD_MODE / $WIREGUARD_INTERFACE / $WIREGUARD_PORT / $WIREGUARD_ADDRESS"
+  if [[ "$ENABLE_WIREGUARD" == yes ]]; then
+    echo "WireGuard mode/interface/port/address: $WIREGUARD_MODE / $WIREGUARD_INTERFACE / $WIREGUARD_PORT / $WIREGUARD_ADDRESS"
+  fi
 }
 
 recommend_swap_size(){
-  local mem_mb role_lc
+  local mem_mb
+  local role_lc
   mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
   role_lc="$(echo "${SERVER_ROLE:-}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then echo 20G
-  elif (( mem_mb <= 4096 )); then echo 4G
-  elif (( mem_mb <= 8192 )); then echo 8G
-  elif (( mem_mb <= 32768 )); then echo 16G
-  else echo 20G; fi
+  if [[ "$role_lc" =~ blockchain|masternode|node|rpc|docker|build ]]; then
+    echo 20G
+  elif (( mem_mb <= 4096 )); then
+    echo 4G
+  elif (( mem_mb <= 8192 )); then
+    echo 8G
+  elif (( mem_mb <= 32768 )); then
+    echo 16G
+  else
+    echo 20G
+  fi
 }
+
 configure_swap_choice(){
-  local recommended choice
+  local recommended
+  local choice
   recommended="$(recommend_swap_size)"
-  echo; echo "Swap file size options:"; echo "1) Auto-recommended based on RAM/server role: $recommended"; echo "2) Custom size"
-  read -rp "Choose option [1-2]: " choice; choice="${choice:-1}"
-  case "$choice" in 1) SWAP_SIZE="$recommended";; 2) SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")";; *) fail "Invalid swap option";; esac
+  echo
+  echo "Swap file size options:"
+  echo "1) Auto-recommended based on RAM/server role: $recommended"
+  echo "2) Custom size"
+  read -rp "Choose option [1-2]: " choice
+  choice="${choice:-1}"
+  case "$choice" in
+    1) SWAP_SIZE="$recommended" ;;
+    2) SWAP_SIZE="$(prompt_default 'Custom swap size, examples: 2G, 8G, 20G, 32768M' "$DEFAULT_SWAP_SIZE")" ;;
+    *) fail "Invalid swap option" ;;
+  esac
 }
-validate_swap_size(){ [[ "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]] || fail "Invalid swap size format. Examples: 2G, 8G, 20G, 32768M"; SWAP_SIZE_BYTES="$(numfmt --from=iec "$SWAP_SIZE")"; ok "Selected swap size: $SWAP_SIZE ($SWAP_SIZE_BYTES bytes)"; }
+
+validate_swap_size(){
+  [[ "$SWAP_SIZE" =~ ^[0-9]+[GgMm]$ ]] || fail "Invalid swap size format. Examples: 2G, 8G, 20G, 32768M"
+  SWAP_SIZE_BYTES="$(numfmt --from=iec "$SWAP_SIZE")"
+  ok "Selected swap size: $SWAP_SIZE ($SWAP_SIZE_BYTES bytes)"
+}
 
 configure_limits_choice(){
   local choice
-  echo; echo "System file/process limit profiles:"
+  echo
+  echo "System file/process limit profiles:"
   echo "1) Conservative  - nofile/nproc 65535,   fs.file-max 1048576"
   echo "2) Recommended   - nofile/nproc 500000,  fs.file-max 2097152"
   echo "3) Max           - nofile/nproc 1048576, fs.file-max 4194304"
   echo "4) Custom"
-  read -rp "Choose option [1-4]: " choice; choice="${choice:-2}"
+  read -rp "Choose option [1-4]: " choice
+  choice="${choice:-2}"
   case "$choice" in
-    1) LIMIT_PROFILE=conservative; LIMIT_VALUE=65535; NPROC_VALUE=65535; FILE_MAX=1048576;;
-    2) LIMIT_PROFILE=recommended; LIMIT_VALUE=500000; NPROC_VALUE=500000; FILE_MAX=2097152;;
-    3) LIMIT_PROFILE=max; LIMIT_VALUE=1048576; NPROC_VALUE=1048576; FILE_MAX=4194304;;
-    4) LIMIT_PROFILE=custom; LIMIT_VALUE="$(prompt_default 'Custom nofile/open files limit' '500000')"; NPROC_VALUE="$(prompt_default 'Custom nproc/process limit' "$LIMIT_VALUE")"; FILE_MAX="$(prompt_default 'Custom fs.file-max kernel ceiling' '2097152')";;
-    *) fail "Invalid limits profile option";;
+    1) LIMIT_PROFILE=conservative; LIMIT_VALUE=65535; NPROC_VALUE=65535; FILE_MAX=1048576 ;;
+    2) LIMIT_PROFILE=recommended; LIMIT_VALUE=500000; NPROC_VALUE=500000; FILE_MAX=2097152 ;;
+    3) LIMIT_PROFILE=max; LIMIT_VALUE=1048576; NPROC_VALUE=1048576; FILE_MAX=4194304 ;;
+    4)
+      LIMIT_PROFILE=custom
+      LIMIT_VALUE="$(prompt_default 'Custom nofile/open files limit' '500000')"
+      NPROC_VALUE="$(prompt_default 'Custom nproc/process limit' "$LIMIT_VALUE")"
+      FILE_MAX="$(prompt_default 'Custom fs.file-max kernel ceiling' '2097152')"
+      ;;
+    *) fail "Invalid limits profile option" ;;
   esac
 }
-validate_limits(){ validate_number "$LIMIT_VALUE" "nofile limit"; validate_number "$NPROC_VALUE" "nproc limit"; validate_number "$FILE_MAX" "fs.file-max"; ok "Selected limits profile: $LIMIT_PROFILE"; ok "nofile=$LIMIT_VALUE nproc=$NPROC_VALUE fs.file-max=$FILE_MAX"; }
+
+validate_limits(){
+  validate_number "$LIMIT_VALUE" "nofile limit"
+  validate_number "$NPROC_VALUE" "nproc limit"
+  validate_number "$FILE_MAX" "fs.file-max"
+  ok "Selected limits profile: $LIMIT_PROFILE"
+  ok "nofile=$LIMIT_VALUE nproc=$NPROC_VALUE fs.file-max=$FILE_MAX"
+}
 
 configure_wireguard_choice(){
   echo
@@ -201,6 +349,7 @@ configure_wireguard_choice(){
   echo "WireGuard options:"
   echo "1) Install package only"
   echo "2) Install + create simple server config"
+  local wg_choice
   read -rp "Choose option [1-2]: " wg_choice
   wg_choice="${wg_choice:-1}"
   case "$wg_choice" in
@@ -218,11 +367,14 @@ configure_wireguard_choice(){
     fi
   fi
 }
+
 validate_wireguard(){
   [[ "$ENABLE_WIREGUARD" != yes ]] && return 0
   [[ "$WIREGUARD_INTERFACE" =~ ^[a-zA-Z0-9_.-]+$ ]] || fail "Invalid WireGuard interface name"
   validate_number "$WIREGUARD_PORT" "WireGuard port"
-  if (( WIREGUARD_PORT < 1 || WIREGUARD_PORT > 65535 )); then fail "WireGuard port must be between 1 and 65535"; fi
+  if (( WIREGUARD_PORT < 1 || WIREGUARD_PORT > 65535 )); then
+    fail "WireGuard port must be between 1 and 65535"
+  fi
   [[ "$WIREGUARD_MODE" == install-only || "$WIREGUARD_MODE" == server ]] || fail "Invalid WireGuard mode"
 }
 
@@ -232,12 +384,21 @@ collect_config(){
   SERVER_ROLE="$(prompt_default 'Server role' "$SERVER_ROLE")"
   SERVER_LOCATION="$(prompt_default 'Provider/location' "$SERVER_LOCATION")"
   ADMIN_USER="$(prompt_default 'Sudo admin username' "$ADMIN_USER")"
-  [[ -z "$SERVER_HOSTNAME" ]] && fail "Hostname cannot be empty"
-  [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"
-  configure_swap_choice; configure_limits_choice
-  echo; echo "SSH key setup options for $ADMIN_USER:"; echo "1) Paste public SSH key"; echo "2) Copy root's existing authorized_keys"; echo "3) Generate a new SSH keypair on this server"
-  read -rp "Choose option [1-3]: " SSH_KEY_OPTION; SSH_KEY_OPTION="${SSH_KEY_OPTION:-2}"
-  if [[ "$SSH_KEY_OPTION" == "1" ]]; then read -rp "Paste the public SSH key for $ADMIN_USER: " ADMIN_PUBLIC_KEY; [[ -z "$ADMIN_PUBLIC_KEY" ]] && fail "SSH public key cannot be empty"; fi
+  [[ -n "$SERVER_HOSTNAME" ]] || fail "Hostname cannot be empty"
+  [[ -n "$ADMIN_USER" ]] || fail "Admin username cannot be empty"
+  configure_swap_choice
+  configure_limits_choice
+  echo
+  echo "SSH key setup options for $ADMIN_USER:"
+  echo "1) Paste public SSH key"
+  echo "2) Copy root's existing authorized_keys"
+  echo "3) Generate a new SSH keypair on this server"
+  read -rp "Choose option [1-3]: " SSH_KEY_OPTION
+  SSH_KEY_OPTION="${SSH_KEY_OPTION:-2}"
+  if [[ "$SSH_KEY_OPTION" == "1" ]]; then
+    read -rp "Paste the public SSH key for $ADMIN_USER: " ADMIN_PUBLIC_KEY
+    [[ -n "$ADMIN_PUBLIC_KEY" ]] || fail "SSH public key cannot be empty"
+  fi
   ALLOW_PASSWORDLESS_SUDO="$(bool_value "Allow passwordless sudo for $ADMIN_USER?" "N")"
   SET_ADMIN_PASSWORD="$(bool_value "Set a local password for $ADMIN_USER?" "Y")"
   SET_ROOT_PASSWORD="$(bool_value "Set/change the local root password?" "Y")"
@@ -248,19 +409,64 @@ collect_config(){
   read -rp "Extra TCP ports to allow, comma-separated, blank for none: " EXTRA_TCP_PORTS
   read -rp "Extra UDP ports to allow, comma-separated, blank for none: " EXTRA_UDP_PORTS
 }
-validate_config(){ [[ -z "$SERVER_HOSTNAME" ]] && SERVER_HOSTNAME="$(hostname)"; [[ -z "$ADMIN_USER" ]] && fail "Admin username cannot be empty"; [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="$(recommend_swap_size)"; validate_swap_size; validate_limits; validate_wireguard; }
 
-password_prompt(){ local u="$1" label="$2"; if $APPLY; then echo "Password prompt for $label will run now. Input will not be shown."; passwd "$u"; else echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."; fi; }
-set_sshd_option(){ local k="$1" v="$2"; if grep -Eq "^[#[:space:]]*$k[[:space:]]+" /etc/ssh/sshd_config; then if grep -Eq "^$k[[:space:]]+$v$" /etc/ssh/sshd_config; then ok "SSH $k $v"; else change "SSH $k $v"; run "sed -i 's|^[#[:space:]]*$k[[:space:]].*|$k $v|' /etc/ssh/sshd_config"; SSH_CHANGED=true; fi; else change "Adding SSH $k $v"; run "echo '$k $v' >> /etc/ssh/sshd_config"; SSH_CHANGED=true; fi; }
+validate_config(){
+  [[ -n "$SERVER_HOSTNAME" ]] || SERVER_HOSTNAME="$(hostname)"
+  [[ -n "$ADMIN_USER" ]] || fail "Admin username cannot be empty"
+  [[ -n "$SWAP_SIZE" ]] || SWAP_SIZE="$(recommend_swap_size)"
+  validate_swap_size
+  validate_limits
+  validate_wireguard
+}
+
+password_prompt(){
+  local u="$1"
+  local label="$2"
+  if $APPLY; then
+    echo "Password prompt for $label will run now. Input will not be shown."
+    passwd "$u"
+  else
+    echo "DRY-RUN: Would securely prompt to set/change password for $label during --apply mode."
+  fi
+}
+
+set_sshd_option(){
+  local k="$1"
+  local v="$2"
+  if grep -Eq "^[#[:space:]]*$k[[:space:]]+" /etc/ssh/sshd_config; then
+    if grep -Eq "^$k[[:space:]]+$v$" /etc/ssh/sshd_config; then
+      ok "SSH $k $v"
+    else
+      change "SSH $k $v"
+      run "sed -i 's|^[#[:space:]]*$k[[:space:]].*|$k $v|' /etc/ssh/sshd_config"
+      SSH_CHANGED=true
+    fi
+  else
+    change "Adding SSH $k $v"
+    run "echo '$k $v' >> /etc/ssh/sshd_config"
+    SSH_CHANGED=true
+  fi
+}
 
 configure_release_upgrades(){
   info "Blocking Ubuntu release upgrades while allowing Ubuntu 22.04 updates"
-  if [[ -f /etc/update-manager/release-upgrades ]]; then backup_file /etc/update-manager/release-upgrades; grep -q '^Prompt=' /etc/update-manager/release-upgrades && run "sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades" || run "echo 'Prompt=never' >> /etc/update-manager/release-upgrades"
-  else run "mkdir -p /etc/update-manager"; run "printf '%s\n' '[DEFAULT]' 'Prompt=never' > /etc/update-manager/release-upgrades"; fi
+  if [[ -f /etc/update-manager/release-upgrades ]]; then
+    backup_file /etc/update-manager/release-upgrades
+    if grep -q '^Prompt=' /etc/update-manager/release-upgrades; then
+      run "sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades"
+    else
+      run "echo 'Prompt=never' >> /etc/update-manager/release-upgrades"
+    fi
+  else
+    run "mkdir -p /etc/update-manager"
+    run "printf '%s\n' '[DEFAULT]' 'Prompt=never' > /etc/update-manager/release-upgrades"
+  fi
 }
+
 configure_unattended_upgrades(){
   info "Configuring unattended security updates"
-  ensure_package unattended-upgrades; ensure_package apt-listchanges
+  ensure_package unattended-upgrades
+  ensure_package apt-listchanges
   write_if_changed /etc/apt/apt.conf.d/20auto-upgrades 'APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";'
@@ -271,21 +477,56 @@ APT::Periodic::AutocleanInterval "7";'
 };
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Automatic-Reboot "false";'
-  run "systemctl enable unattended-upgrades || true"; run "systemctl restart unattended-upgrades || true"
+  run "systemctl enable unattended-upgrades || true"
+  run "systemctl restart unattended-upgrades || true"
 }
-run_system_updates(){ configure_release_upgrades; if [[ "$RUN_SYSTEM_UPDATES" == yes ]]; then info "Running safe Ubuntu 22.04 updates and patches"; run "apt update -y"; run "DEBIAN_FRONTEND=noninteractive apt upgrade -y"; run "DEBIAN_FRONTEND=noninteractive apt full-upgrade -y"; run "apt autoremove -y"; run "apt autoclean -y"; else info "Skipping package updates by config"; run "apt update -y"; fi; [[ "$ENABLE_UNATTENDED_SECURITY_UPDATES" == yes ]] && configure_unattended_upgrades || ok "Unattended security updates not enabled by config"; }
 
-microcode_report(){ dpkg-query -W -f='${binary:Package} ${Version}\n' intel-microcode amd64-microcode 2>/dev/null || true; }
+run_system_updates(){
+  configure_release_upgrades
+  if [[ "$RUN_SYSTEM_UPDATES" == yes ]]; then
+    info "Running safe Ubuntu 22.04 updates and patches"
+    run "apt-get update -y"
+    run "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"
+    run "DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y"
+    run "apt-get autoremove -y"
+    run "apt-get autoclean -y"
+  else
+    info "Skipping package updates by config"
+    run "apt-get update -y"
+  fi
+  if [[ "$ENABLE_UNATTENDED_SECURITY_UPDATES" == yes ]]; then
+    configure_unattended_upgrades
+  else
+    ok "Unattended security updates not enabled by config"
+  fi
+}
+
+microcode_report(){
+  dpkg-query -W -f='${binary:Package} ${Version}\n' intel-microcode amd64-microcode 2>/dev/null || true
+}
+
 configure_microcode(){
   info "Installing correct CPU microcode package"
-  local vendor opposite
+  local vendor
+  local opposite
   vendor="$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || true)"
   case "$vendor" in
-    GenuineIntel) ensure_package intel-microcode; opposite=amd64-microcode;;
-    AuthenticAMD) ensure_package amd64-microcode; opposite=intel-microcode;;
-    *) warn "Unknown CPU vendor '$vendor'. Skipping microcode package cleanup."; return 0;;
+    GenuineIntel)
+      ensure_package intel-microcode
+      opposite=amd64-microcode
+      ;;
+    AuthenticAMD)
+      ensure_package amd64-microcode
+      opposite=intel-microcode
+      ;;
+    *)
+      warn "Unknown CPU vendor '$vendor'. Skipping microcode package cleanup."
+      return 0
+      ;;
   esac
-  if dpkg -s "$opposite" >/dev/null 2>&1; then warn "$opposite is installed but will NOT be auto-removed because apt may remove kernel meta-packages with it. Review manually after confirming apt remove simulation."; fi
+  if dpkg -s "$opposite" >/dev/null 2>&1; then
+    warn "$opposite is installed but will NOT be auto-removed because apt may remove kernel meta-packages with it. Review manually after confirming apt remove simulation."
+  fi
 }
 
 configure_wireguard(){
@@ -296,7 +537,7 @@ configure_wireguard(){
   ensure_package qrencode
   run "mkdir -p /etc/wireguard"
   run "chmod 700 /etc/wireguard"
-  if [[ "$WIREGUARD_MODE" == "install-only" ]]; then
+  if [[ "$WIREGUARD_MODE" == install-only ]]; then
     ok "WireGuard packages selected for install only"
     return 0
   fi
@@ -344,7 +585,8 @@ PrivateKey = $private_key$peer_block"
 create_verify_script(){
   cat > "$VERIFY_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'rc=$?; echo "ERROR: Verification failed at line $LINENO while running: $BASH_COMMAND" >&2; exit $rc' ERR
 
 echo "========================================="
 echo " Ubuntu 22.04 Setup Verification"
@@ -377,7 +619,10 @@ check "Baseline summary" "cat /root/server-baseline-summary.txt 2>/dev/null || e
 check "Saved configs" "ls -lah /root/system-setup-configs/ 2>/dev/null || echo 'No config folder found'"
 check "Backup folders" "ls -lah /root/system-setup-backups/ 2>/dev/null || echo 'No backup folder found'"
 check "Log folders" "ls -lah /root/system-setup-logs/ 2>/dev/null || echo 'No log folder found'"
-echo; echo "========================================="; echo " Verification complete"; echo "========================================="
+echo
+echo "========================================="
+echo " Verification complete"
+echo "========================================="
 EOF
   chmod +x "$VERIFY_SCRIPT"
 }
@@ -439,45 +684,153 @@ Verify Script: $VERIFY_SCRIPT
 EOF
 }
 
-# Start
-echo "========================================="; echo " $SCRIPT_NAME v$SCRIPT_VERSION"; echo " Mode: $($APPLY && echo APPLY || echo DRY-RUN)"; echo "========================================="
-if [[ -n "$CONFIG_FILE" ]]; then load_config "$CONFIG_FILE"; elif $APPLY; then load_latest_config_if_requested; fi
-if ! $CONFIG_LOADED; then ! $APPLY && warn "Dry-run mode will NOT ask for hidden password entry. Password prompts only run with --apply."; collect_config; save_config; else show_config_summary; prompt_yes_no "Continue with this loaded configuration?" "Y" || fail "Aborted by user"; fi
-validate_config; show_config_summary
-[[ "$(hostname)" != "$SERVER_HOSTNAME" ]] && run "hostnamectl set-hostname '$SERVER_HOSTNAME'" || ok "Hostname already $SERVER_HOSTNAME"
+echo "========================================="
+echo " $SCRIPT_NAME v$SCRIPT_VERSION"
+echo " Mode: $($APPLY && echo APPLY || echo DRY-RUN)"
+echo "========================================="
+
+if [[ -n "$CONFIG_FILE" ]]; then
+  load_config "$CONFIG_FILE"
+elif $APPLY; then
+  load_latest_config_if_requested
+fi
+
+if ! $CONFIG_LOADED; then
+  if ! $APPLY; then
+    warn "Dry-run mode will NOT ask for hidden password entry. Password prompts only run with --apply."
+  fi
+  collect_config
+  save_config
+else
+  show_config_summary
+  prompt_yes_no "Continue with this loaded configuration?" "Y" || fail "Aborted by user"
+fi
+
+validate_config
+show_config_summary
+
+if [[ "$(hostname)" != "$SERVER_HOSTNAME" ]]; then
+  run "hostnamectl set-hostname '$SERVER_HOSTNAME'"
+else
+  ok "Hostname already $SERVER_HOSTNAME"
+fi
 
 run_system_updates
 
 info "Installing baseline packages"
 PACKAGES=(htop btop iotop iftop nvme-cli smartmontools curl wget unzip jq git net-tools dnsutils tmux rsync lsof fail2ban ufw unattended-upgrades needrestart chrony ntpstat logrotate sudo openssh-server)
-for p in "${PACKAGES[@]}"; do ensure_package "$p"; done
-dpkg -s ntp >/dev/null 2>&1 && run "apt remove -y ntp" || ok "ntp package not installed"
+for p in "${PACKAGES[@]}"; do
+  ensure_package "$p"
+done
 
-info "Configuring timezone"; [[ "$(timedatectl show -p Timezone --value || true)" != UTC ]] && run "timedatectl set-timezone UTC" || ok "Timezone already UTC"
+if dpkg -s ntp >/dev/null 2>&1; then
+  remove_package_if_installed ntp
+else
+  ok "ntp package not installed"
+fi
+
+info "Configuring timezone"
+if [[ "$(timedatectl show -p Timezone --value || true)" != UTC ]]; then
+  run "timedatectl set-timezone UTC"
+else
+  ok "Timezone already UTC"
+fi
 
 info "Creating sudo admin user"
-id "$ADMIN_USER" >/dev/null 2>&1 && ok "User $ADMIN_USER already exists" || run "adduser --disabled-password --gecos '' '$ADMIN_USER'"
+if id "$ADMIN_USER" >/dev/null 2>&1; then
+  ok "User $ADMIN_USER already exists"
+else
+  run "adduser --disabled-password --gecos '' '$ADMIN_USER'"
+fi
 run "usermod -aG sudo '$ADMIN_USER'"
-ADMIN_HOME="/home/$ADMIN_USER"; ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"; ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
-run "mkdir -p '$ADMIN_SSH_DIR'"; run "touch '$ADMIN_AUTH_KEYS'"; run "chmod 700 '$ADMIN_SSH_DIR'"; run "chmod 600 '$ADMIN_AUTH_KEYS'"; run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
+ADMIN_HOME="/home/$ADMIN_USER"
+ADMIN_SSH_DIR="$ADMIN_HOME/.ssh"
+ADMIN_AUTH_KEYS="$ADMIN_SSH_DIR/authorized_keys"
+run "mkdir -p '$ADMIN_SSH_DIR'"
+run "touch '$ADMIN_AUTH_KEYS'"
+run "chmod 700 '$ADMIN_SSH_DIR'"
+run "chmod 600 '$ADMIN_AUTH_KEYS'"
+run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
 case "$SSH_KEY_OPTION" in
-  1) [[ -z "$ADMIN_PUBLIC_KEY" ]] && fail "SSH_KEY_OPTION=1 requires ADMIN_PUBLIC_KEY"; grep -Fxq "$ADMIN_PUBLIC_KEY" "$ADMIN_AUTH_KEYS" 2>/dev/null && ok "SSH key already exists for $ADMIN_USER" || run "echo '$ADMIN_PUBLIC_KEY' >> '$ADMIN_AUTH_KEYS'";;
-  2) [[ -f /root/.ssh/authorized_keys ]] || fail "/root/.ssh/authorized_keys not found. Use SSH_KEY_OPTION=1 or 3."; run "cat /root/.ssh/authorized_keys >> '$ADMIN_AUTH_KEYS'"; run "sort -u '$ADMIN_AUTH_KEYS' -o '$ADMIN_AUTH_KEYS'";;
-  3) KEY_PATH="/root/${ADMIN_USER}_ed25519"; [[ -f "$KEY_PATH" ]] && ok "Generated key already exists at $KEY_PATH" || { run "ssh-keygen -t ed25519 -a 100 -f '$KEY_PATH' -N '' -C '${ADMIN_USER}@${SERVER_HOSTNAME}'"; run "cat '${KEY_PATH}.pub' >> '$ADMIN_AUTH_KEYS'"; }; warn "Save private key securely from: $KEY_PATH";;
-  *) fail "Invalid SSH key option: $SSH_KEY_OPTION";;
+  1)
+    [[ -n "$ADMIN_PUBLIC_KEY" ]] || fail "SSH_KEY_OPTION=1 requires ADMIN_PUBLIC_KEY"
+    if grep -Fxq "$ADMIN_PUBLIC_KEY" "$ADMIN_AUTH_KEYS" 2>/dev/null; then
+      ok "SSH key already exists for $ADMIN_USER"
+    else
+      run "echo '$ADMIN_PUBLIC_KEY' >> '$ADMIN_AUTH_KEYS'"
+    fi
+    ;;
+  2)
+    [[ -f /root/.ssh/authorized_keys ]] || fail "/root/.ssh/authorized_keys not found. Use SSH_KEY_OPTION=1 or 3."
+    run "cat /root/.ssh/authorized_keys >> '$ADMIN_AUTH_KEYS'"
+    run "sort -u '$ADMIN_AUTH_KEYS' -o '$ADMIN_AUTH_KEYS'"
+    ;;
+  3)
+    KEY_PATH="/root/${ADMIN_USER}_ed25519"
+    if [[ -f "$KEY_PATH" ]]; then
+      ok "Generated key already exists at $KEY_PATH"
+    else
+      run "ssh-keygen -t ed25519 -a 100 -f '$KEY_PATH' -N '' -C '${ADMIN_USER}@${SERVER_HOSTNAME}'"
+      run "cat '${KEY_PATH}.pub' >> '$ADMIN_AUTH_KEYS'"
+    fi
+    warn "Save private key securely from: $KEY_PATH"
+    ;;
+  *) fail "Invalid SSH key option: $SSH_KEY_OPTION" ;;
 esac
-run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"; run "chmod 700 '$ADMIN_SSH_DIR'"; run "chmod 600 '$ADMIN_AUTH_KEYS'"
-$APPLY && [[ ! -s "$ADMIN_AUTH_KEYS" ]] && fail "$ADMIN_USER has no SSH authorized_keys. Refusing to disable root SSH."
-[[ "$ALLOW_PASSWORDLESS_SUDO" == yes ]] && { run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"; run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"; } || ok "Normal sudo selected"
-[[ "$SET_ADMIN_PASSWORD" == yes ]] && { ADMIN_LOCAL_PASSWORD_SELECTED=yes; password_prompt "$ADMIN_USER" "$ADMIN_USER"; } || { ADMIN_LOCAL_PASSWORD_SELECTED=no; warn "No local password selected for $ADMIN_USER"; }
+run "chown -R '$ADMIN_USER:$ADMIN_USER' '$ADMIN_SSH_DIR'"
+run "chmod 700 '$ADMIN_SSH_DIR'"
+run "chmod 600 '$ADMIN_AUTH_KEYS'"
+if $APPLY && [[ ! -s "$ADMIN_AUTH_KEYS" ]]; then
+  fail "$ADMIN_USER has no SSH authorized_keys. Refusing to disable root SSH."
+fi
+
+if [[ "$ALLOW_PASSWORDLESS_SUDO" == yes ]]; then
+  run "echo '$ADMIN_USER ALL=(ALL) NOPASSWD:ALL' > '/etc/sudoers.d/90-$ADMIN_USER'"
+  run "chmod 440 '/etc/sudoers.d/90-$ADMIN_USER'"
+else
+  ok "Normal sudo selected"
+fi
+if [[ "$SET_ADMIN_PASSWORD" == yes ]]; then
+  ADMIN_LOCAL_PASSWORD_SELECTED=yes
+  password_prompt "$ADMIN_USER" "$ADMIN_USER"
+else
+  ADMIN_LOCAL_PASSWORD_SELECTED=no
+  warn "No local password selected for $ADMIN_USER"
+fi
 $APPLY && visudo -cf /etc/sudoers
 
-info "Root account security"; [[ "$SET_ROOT_PASSWORD" == yes ]] && { ROOT_PASSWORD_CHANGE_SELECTED=yes; password_prompt root root; } || ROOT_PASSWORD_CHANGE_SELECTED=no; [[ "$LOCK_ROOT_PASSWORD" == yes ]] && run "passwd -l root" || ok "Root password left enabled for console/recovery use"
+info "Root account security"
+if [[ "$SET_ROOT_PASSWORD" == yes ]]; then
+  ROOT_PASSWORD_CHANGE_SELECTED=yes
+  password_prompt root root
+else
+  ROOT_PASSWORD_CHANGE_SELECTED=no
+fi
+if [[ "$LOCK_ROOT_PASSWORD" == yes ]]; then
+  run "passwd -l root"
+else
+  ok "Root password left enabled for console/recovery use"
+fi
 
 info "Checking swap"
 CURRENT_SWAP_SIZE=0
-if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$SWAP_FILE"; then CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"; fi
-if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then ok "$SWAP_SIZE swap already active and persistent"; else change "Configuring $SWAP_SIZE swap"; backup_file /etc/fstab; run "swapoff '$SWAP_FILE' || true"; run "rm -f '$SWAP_FILE'"; run "sed -i '\|$SWAP_FILE|d' /etc/fstab"; run "fallocate -l '$SWAP_SIZE' '$SWAP_FILE'"; run "chmod 600 '$SWAP_FILE'"; run "mkswap '$SWAP_FILE'"; run "swapon '$SWAP_FILE'"; run "echo '$SWAP_FILE none swap sw 0 0' >> /etc/fstab"; fi
+if swapon --show=NAME,SIZE --bytes --noheadings | awk '{print $1}' | grep -qx "$SWAP_FILE"; then
+  CURRENT_SWAP_SIZE="$(swapon --show=NAME,SIZE --bytes --noheadings | awk -v s="$SWAP_FILE" '$1==s {print $2}')"
+fi
+if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE_BYTES" ]] && grep -q "^$SWAP_FILE none swap sw 0 0" /etc/fstab; then
+  ok "$SWAP_SIZE swap already active and persistent"
+else
+  change "Configuring $SWAP_SIZE swap"
+  backup_file /etc/fstab
+  run "swapoff '$SWAP_FILE' || true"
+  run "rm -f '$SWAP_FILE'"
+  run "sed -i '\|$SWAP_FILE|d' /etc/fstab"
+  run "fallocate -l '$SWAP_SIZE' '$SWAP_FILE'"
+  run "chmod 600 '$SWAP_FILE'"
+  run "mkswap '$SWAP_FILE'"
+  run "swapon '$SWAP_FILE'"
+  run "echo '$SWAP_FILE none swap sw 0 0' >> /etc/fstab"
+fi
 
 info "Applying sysctl tuning"
 write_if_changed /etc/sysctl.d/99-custom-system-tuning.conf "vm.swappiness=10
@@ -503,18 +856,42 @@ root soft nofile $LIMIT_VALUE
 root hard nofile $LIMIT_VALUE
 root soft nproc $NPROC_VALUE
 root hard nproc $NPROC_VALUE"
-ensure_line /etc/pam.d/common-session "session required pam_limits.so"; ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
+ensure_line /etc/pam.d/common-session "session required pam_limits.so"
+ensure_line /etc/pam.d/common-session-noninteractive "session required pam_limits.so"
 write_if_changed /etc/systemd/system.conf.d/99-custom-limits.conf "[Manager]
 DefaultLimitNOFILE=$LIMIT_VALUE
 DefaultLimitNPROC=$NPROC_VALUE"
 run "systemctl daemon-reexec"
 
-info "Configuring UFW firewall"; ufw status | grep -q "22/tcp" && ok "UFW already allows SSH port 22" || run "ufw allow 22/tcp comment 'SSH'"
-IFS=',' read -ra TCP_PORTS <<< "$EXTRA_TCP_PORTS"; for port in "${TCP_PORTS[@]}"; do port="$(echo "$port" | xargs)"; [[ -n "$port" ]] && run "ufw allow ${port}/tcp"; done
-IFS=',' read -ra UDP_PORTS <<< "$EXTRA_UDP_PORTS"; for port in "${UDP_PORTS[@]}"; do port="$(echo "$port" | xargs)"; [[ -n "$port" ]] && run "ufw allow ${port}/udp"; done
-ufw status | grep -q "Status: active" && ok "UFW already active" || run "ufw --force enable"
+info "Configuring UFW firewall"
+if ufw status | grep -q "22/tcp"; then
+  ok "UFW already allows SSH port 22"
+else
+  run "ufw allow 22/tcp comment 'SSH'"
+fi
+IFS=',' read -ra TCP_PORTS <<< "$EXTRA_TCP_PORTS"
+for port in "${TCP_PORTS[@]}"; do
+  port="$(echo "$port" | xargs)"
+  [[ -n "$port" ]] && run "ufw allow ${port}/tcp"
+done
+IFS=',' read -ra UDP_PORTS <<< "$EXTRA_UDP_PORTS"
+for port in "${UDP_PORTS[@]}"; do
+  port="$(echo "$port" | xargs)"
+  [[ -n "$port" ]] && run "ufw allow ${port}/udp"
+done
+if ufw status | grep -q "Status: active"; then
+  ok "UFW already active"
+else
+  run "ufw --force enable"
+fi
 
-info "Configuring Fail2Ban"; run "systemctl enable fail2ban"; systemctl is-active fail2ban >/dev/null 2>&1 && ok "fail2ban already active" || run "systemctl start fail2ban"
+info "Configuring Fail2Ban"
+run "systemctl enable fail2ban"
+if systemctl is-active fail2ban >/dev/null 2>&1; then
+  ok "fail2ban already active"
+else
+  run "systemctl start fail2ban"
+fi
 
 info "Configuring Chrony"
 write_if_changed /etc/chrony/chrony.conf "pool 0.ca.pool.ntp.org iburst maxsources 4
@@ -531,20 +908,64 @@ driftfile /var/lib/chrony/chrony.drift
 makestep 1.0 3
 rtcsync
 logdir /var/log/chrony"
-run "systemctl disable --now systemd-timesyncd || true"; run "systemctl enable chrony"; run "systemctl restart chrony"
+run "systemctl disable --now systemd-timesyncd || true"
+run "systemctl enable chrony"
+run "systemctl restart chrony"
 
-info "Hardening SSH"; backup_file /etc/ssh/sshd_config
-set_sshd_option PermitRootLogin no; set_sshd_option PasswordAuthentication no; set_sshd_option PubkeyAuthentication yes; set_sshd_option KbdInteractiveAuthentication no; set_sshd_option ChallengeResponseAuthentication no; set_sshd_option UsePAM yes; set_sshd_option MaxAuthTries 3; set_sshd_option ClientAliveInterval 300; set_sshd_option ClientAliveCountMax 2
-$APPLY && sshd -t; [[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
+info "Hardening SSH"
+backup_file /etc/ssh/sshd_config
+set_sshd_option PermitRootLogin no
+set_sshd_option PasswordAuthentication no
+set_sshd_option PubkeyAuthentication yes
+set_sshd_option KbdInteractiveAuthentication no
+set_sshd_option ChallengeResponseAuthentication no
+set_sshd_option UsePAM yes
+set_sshd_option MaxAuthTries 3
+set_sshd_option ClientAliveInterval 300
+set_sshd_option ClientAliveCountMax 2
+$APPLY && sshd -t
+[[ "$SSH_CHANGED" == true ]] && run "systemctl restart ssh"
 
-info "Enabling SSD/NVMe trim timer"; systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"; systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
+info "Enabling SSD/NVMe trim timer"
+systemctl is-enabled fstrim.timer >/dev/null 2>&1 || run "systemctl enable fstrim.timer"
+systemctl is-active fstrim.timer >/dev/null 2>&1 || run "systemctl start fstrim.timer"
 configure_microcode
 configure_wireguard
 
-info "Creating verification script"; if $APPLY; then create_verify_script; write_summary; else echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"; fi
+info "Creating verification script"
+if $APPLY; then
+  create_verify_script
+  write_summary
+else
+  echo "Dry-run: would create $VERIFY_SCRIPT and $SUMMARY_FILE"
+fi
 
-echo; echo "========================================="; echo " FINAL STATUS"; echo "========================================="
-swapon --show || true; free -h || true; sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true; ufw status verbose || true; systemctl status fail2ban --no-pager || true; command -v chronyc >/dev/null 2>&1 && chronyc tracking || true; timedatectl || true; command -v wg >/dev/null 2>&1 && wg show || true; sshd -t && echo "SSHD config valid"; [[ -f /var/run/reboot-required ]] && cat /var/run/reboot-required || echo "No reboot-required flag present"
-echo "Logs: $LOG_DIR"; echo "Backups: $BACKUP_DIR"; echo "Saved config: ${CONFIG_FILE:-$GENERATED_CONFIG_FILE}"; echo "Summary: $SUMMARY_FILE"; echo "Verify script: $VERIFY_SCRIPT"
-echo; echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"; echo "ssh $ADMIN_USER@SERVER_IP"; echo "sudo whoami"; echo "Expected result: root"
-prompt_yes_no "Reboot now?" "N" && run "reboot" || echo "Recommended: reboot after first successful apply, especially if kernel updates were installed."
+echo
+echo "========================================="
+echo " FINAL STATUS"
+echo "========================================="
+swapon --show || true
+free -h || true
+sysctl vm.swappiness vm.vfs_cache_pressure fs.file-max net.ipv4.tcp_congestion_control kernel.panic || true
+ufw status verbose || true
+systemctl status fail2ban --no-pager || true
+command -v chronyc >/dev/null 2>&1 && chronyc tracking || true
+timedatectl || true
+command -v wg >/dev/null 2>&1 && wg show || true
+sshd -t && echo "SSHD config valid"
+[[ -f /var/run/reboot-required ]] && cat /var/run/reboot-required || echo "No reboot-required flag present"
+echo "Logs: $LOG_DIR"
+echo "Backups: $BACKUP_DIR"
+echo "Saved config: ${CONFIG_FILE:-$GENERATED_CONFIG_FILE}"
+echo "Summary: $SUMMARY_FILE"
+echo "Verify script: $VERIFY_SCRIPT"
+echo
+echo "IMPORTANT: Before closing your current SSH/session, open a NEW terminal and test:"
+echo "ssh $ADMIN_USER@SERVER_IP"
+echo "sudo whoami"
+echo "Expected result: root"
+if prompt_yes_no "Reboot now?" "N"; then
+  run "reboot"
+else
+  echo "Recommended: reboot after first successful apply, especially if kernel updates were installed."
+fi
