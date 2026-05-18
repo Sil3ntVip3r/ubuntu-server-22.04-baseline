@@ -1,5 +1,73 @@
 # Changelog
 
+## v1.6.0
+
+### Added
+
+- Optional WireGuard VPN support.
+- Optional WireGuard package-only installation mode.
+- Optional WireGuard simple server configuration mode.
+- Automatic WireGuard key generation.
+- Automatic WireGuard interface configuration.
+- Automatic WireGuard UFW UDP rule configuration.
+- Automatic WireGuard service enablement.
+- WireGuard verification checks.
+- WireGuard reporting in server summaries.
+- Dedicated WireGuard documentation.
+
+### WireGuard Packages
+
+The baseline can now install:
+
+- wireguard
+- wireguard-tools
+- qrencode
+
+### WireGuard Features
+
+Optional server mode now supports:
+
+- private key generation
+- public key generation
+- interface creation
+- persistent configuration
+- automatic service startup
+- optional peer configuration
+
+### Security Improvements
+
+- WireGuard private keys are never stored in reusable config files.
+- WireGuard private keys are never printed into logs.
+- WireGuard configs are created with restrictive permissions.
+- Key generation occurs locally on the target server.
+
+### Documentation Improvements
+
+Updated:
+
+- README.md
+- CHANGELOG.md
+- verification references
+- feature summaries
+
+Added:
+
+```text
+docs/wireguard.md
+```
+
+### Future Expansion Path
+
+WireGuard support creates a foundation for future:
+
+- VPN-only management
+- private RPC networking
+- full mesh topologies
+- fleet interconnects
+- internal-only infrastructure
+
+---
+
 ## v1.5.1
 
 ### Fixed
@@ -27,29 +95,6 @@ New safer behavior:
 - Opposite microcode package is left installed unless manually reviewed.
 - Script warns administrators to manually simulate package removal before cleanup.
 
-### Recommended Manual Validation
-
-Example:
-
-```bash
-sudo apt remove --simulate amd64-microcode
-```
-
-or:
-
-```bash
-sudo apt remove --simulate intel-microcode
-```
-
-Only remove the package if NO kernel meta-packages would also be removed.
-
-### Improved
-
-- Safer production deployment behavior.
-- Better kernel package protection.
-- More reliable verification reporting.
-- Improved fleet safety.
-
 ---
 
 ## v1.5.0
@@ -66,16 +111,6 @@ Only remove the package if NO kernel meta-packages would also be removed.
 - Verification checks for reboot-required state.
 - Config options for update management.
 - Summary reporting for update configuration.
-
-### Ubuntu Update Policy
-
-The baseline now:
-
-- installs Ubuntu 22.04 security updates
-- installs Ubuntu 22.04 package updates
-- installs kernel/security patches
-- blocks Ubuntu release upgrades
-- prevents accidental 22.04 -> 24.04 upgrades
 
 ---
 
