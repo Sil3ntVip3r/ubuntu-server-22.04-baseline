@@ -1,350 +1,86 @@
 # Ubuntu Server 22.04 Baseline
 
-Fleet-ready Ubuntu 22.04 provisioning, hardening, tuning, verification, reusable configuration, update-management, and optional WireGuard VPN baseline for:
-
-- VPS infrastructure
-- Blockchain and masternode servers
-- Docker hosts
-- RPC nodes
-- Build servers
-- General Ubuntu 22.04 infrastructure
-
-Designed for repeatable fleet provisioning with convergent/idempotent configuration handling.
+Fleet-ready Ubuntu 22.04 baseline for provisioning, hardening, tuning, verification, reusable configuration, update management, and optional WireGuard support.
 
 Current baseline version:
 
 ```text
-v1.6.0
+v1.6.1
 ```
 
 ---
 
-# Features
+## v1.6.1 Hotfix
 
-## Interactive Provisioning
+This release fixes the silent-exit issue found during real server testing.
 
-The setup script interactively prompts for:
+The previous script could stop while creating a new system tuning file and never reach the final verification-script creation step.
 
-- Hostname
-- Server role
-- Provider/location
-- Sudo admin username
-- Swap sizing mode
-- System limits profile
-- SSH key setup method
-- Local admin password selection
-- Root password handling
-- Ubuntu update policy
-- Unattended security updates
-- Optional WireGuard VPN support
-- Extra firewall ports
-- Optional reboot
+Fixed in this release:
+
+- Missing source files are no longer treated as failed backups.
+- Dry-run command wrappers now return success cleanly.
+- Future script failures now print the failing line and command.
+- Successful apply runs create `/root/ubuntu22-verify.sh`.
 
 ---
 
-# WireGuard VPN Support
+## Main Features
 
-Optional WireGuard VPN support is now integrated directly into the baseline.
-
-Reference:
-
-urlWireGuard Official Sitehttps://www.wireguard.com/install/
-
-## Supported Modes
-
-### Install Only
-
-Installs:
-
-- wireguard
-- wireguard-tools
-- qrencode
-
-without creating VPN configuration.
-
-### Simple Server Mode
-
-Automatically:
-
-- generates WireGuard keys
-- creates server config
-- configures UFW UDP port
-- enables wg-quick service
-- creates VPN interface
-- stores configs securely
-
-## WireGuard Security Design
-
-The baseline intentionally:
-
-- never stores WireGuard private keys in reusable config files
-- generates keys locally on the server
-- stores configs with restrictive permissions
-- avoids logging private key material
-
-## Default WireGuard Settings
-
-| Setting | Default |
-|---|---|
-| Interface | wg0 |
-| UDP Port | 51820 |
-| VPN Address | 10.100.0.1/24 |
-
-## Future Fleet Benefits
-
-WireGuard support enables:
-
-- private inter-server networking
-- private RPC infrastructure
-- VPN-only SSH access
-- hidden backend services
-- encrypted management traffic
-- future mesh networking
-
-## WireGuard Files
-
-```text
-/etc/wireguard/
-```
-
-Generated files:
-
-```text
-wg0.conf
-wg0.key
-wg0.pub
-```
+- Interactive provisioning
+- Saved dry-run configuration files
+- Apply mode with saved config reuse
+- Safe Ubuntu 22.04 package updates
+- Ubuntu release-upgrade blocking
+- Unattended security update support
+- Swap configuration
+- File and process limit profiles
+- UFW firewall setup
+- Fail2Ban setup
+- Chrony time sync
+- SSH hardening
+- CPU microcode safety handling
+- Optional WireGuard install/server mode
+- Verification script generation
+- Logs, backups, and summaries
 
 ---
 
-# Ubuntu 22.04 Update Management
+## Usage
 
-The baseline includes safe Ubuntu 22.04 patch management.
-
-## What It Does
-
-- installs Ubuntu 22.04 security updates
-- installs Ubuntu 22.04 package updates
-- installs kernel/security patches
-- runs package cleanup automatically
-- configures unattended security updates
-- blocks Ubuntu release upgrades
-
-## What It Prevents
-
-The baseline prevents accidental:
-
-- Ubuntu 22.04 -> 24.04 upgrades
-- release-upgrade prompts
-- unattended distro migrations
-
-## Release Upgrade Policy
-
-The script enforces:
-
-```text
-Prompt=never
-```
-
-inside:
-
-```text
-/etc/update-manager/release-upgrades
-```
-
----
-
-# Saved Configuration Workflow
-
-Dry-run mode automatically saves reusable configuration files.
-
-Configuration directory:
-
-```text
-/root/system-setup-configs/
-```
-
-Supports:
-
-- reusable provisioning configs
-- repeatable deployments
-- apply-mode config reuse
-- explicit config loading
-- fleet consistency
-- multi-server provisioning
-
----
-
-# Security Features
-
-## SSH Hardening
-
-- Root SSH login disabled
-- SSH password authentication disabled
-- SSH key authentication enabled
-- Configurable sudo admin user
-- Public key paste, root key copy, or generated keypair options
-- SSH config validation before restart
-- Reduced SSH authentication attempts
-- SSH keepalive tuning
-
-## Firewall and Protection
-
-- UFW firewall
-- SSH port 22 automatically opened before firewall enablement
-- Optional additional TCP/UDP ports
-- Fail2Ban enabled
-- Optional WireGuard UDP port support
-
-## CPU Microcode Safety
-
-The baseline now safely handles microcode installation.
-
-### Current Behavior
-
-- installs the correct vendor microcode package
-- DOES NOT automatically remove opposite-vendor microcode packages
-- prevents accidental kernel meta-package removal
-
-### Example
-
-Intel CPU:
-
-- installs `intel-microcode`
-- warns if `amd64-microcode` exists
-
-AMD CPU:
-
-- installs `amd64-microcode`
-- warns if `intel-microcode` exists
-
-### Why
-
-Removing the opposite package can sometimes remove:
-
-- linux-generic
-- linux-image-generic
-- kernel meta-packages
-
-The safer approach is:
-
-- install correct package automatically
-- manually review removals later
-
----
-
-# System Tuning
-
-## Sysctl Tuning
-
-Includes:
-
-- Reduced swap aggressiveness
-- Filesystem cache tuning
-- SSD write tuning
-- BBR congestion control
-- TCP backlog tuning
-- Kernel panic auto reboot
-- inotify scaling
-
-## Limits Integration
-
-The selected limits profile is applied through:
-
-- `/etc/security/limits.d/99-custom-limits.conf`
-- PAM session limits
-- systemd manager limits
-- `fs.file-max` sysctl
-
----
-
-# Logging, Backups, and Configs
-
-Each run creates:
-
-```text
-/root/system-setup-logs/YYYYMMDD-HHMMSS/
-/root/system-setup-backups/YYYYMMDD-HHMMSS/
-/root/system-setup-configs/YYYYMMDD-HHMMSS.conf
-```
-
-Includes:
-
-- full console log
-- configuration backups
-- reusable provisioning config
-- server summary
-- verification references
-
-Summary file:
-
-```text
-/root/server-baseline-summary.txt
-```
-
----
-
-# Verification Script
-
-Automatically generates:
-
-```text
-/root/ubuntu22-verify.sh
-```
-
-The verification script validates:
-
-- Ubuntu release version
-- release-upgrade policy
-- unattended-upgrades
-- reboot-required status
-- swap
-- sysctl values
-- firewall
-- fail2ban
-- chrony
-- SSH settings
-- PAM limits
-- systemd limits
-- WireGuard installation
-- WireGuard interfaces
-- installed packages
-- microcode packages
-- saved configs
-- summaries
-- backups
-- logs
-
-## Run Verification
-
-```bash
-bash /root/ubuntu22-verify.sh
-```
-
----
-
-# Usage
-
-Clone repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/Sil3ntVip3r/ubuntu-server-22.04-baseline.git
 cd ubuntu-server-22.04-baseline
 ```
 
-## Run Dry-Run Mode
+Update an existing clone:
+
+```bash
+git pull
+grep SCRIPT_VERSION setup/ubuntu22-system-setup.sh
+```
+
+Expected:
+
+```text
+SCRIPT_VERSION="1.6.1"
+```
+
+Run dry-run mode:
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh
 ```
 
-## Run Apply Mode
+Run apply mode:
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh --apply
 ```
 
-## Run Apply Mode With Explicit Config
+Run apply mode with a specific config:
 
 ```bash
 sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-configs/example.conf
@@ -352,32 +88,67 @@ sudo bash setup/ubuntu22-system-setup.sh --apply --config /root/system-setup-con
 
 ---
 
-# Recommended Workflow
+## Generated Files
 
-1. Run dry-run first
-2. Save and review generated config
-3. Reuse or edit config if needed
-4. Run apply mode
-5. Complete password prompts during apply mode
-6. Open a second terminal
-7. Verify the new sudo admin SSH login works
-8. Run the generated verification script
-9. Verify WireGuard if enabled
-10. Reboot server if updates/kernel changes require it
-11. Rerun verification after reboot
+Logs:
+
+```text
+/root/system-setup-logs/YYYYMMDD-HHMMSS/
+```
+
+Backups:
+
+```text
+/root/system-setup-backups/YYYYMMDD-HHMMSS/
+```
+
+Saved configs:
+
+```text
+/root/system-setup-configs/YYYYMMDD-HHMMSS.conf
+```
+
+Summary:
+
+```text
+/root/server-baseline-summary.txt
+```
+
+Verification script:
+
+```text
+/root/ubuntu22-verify.sh
+```
+
+Run verification:
+
+```bash
+bash /root/ubuntu22-verify.sh
+```
 
 ---
 
-# Documentation
+## Recommended Workflow
 
-Recovery guide:
+1. Pull the latest repository.
+2. Confirm the script version is `v1.6.1`.
+3. Run dry-run mode.
+4. Review the saved config.
+5. Run apply mode.
+6. Test the new admin login from a second terminal.
+7. Confirm `/root/ubuntu22-verify.sh` exists.
+8. Run verification.
+9. Reboot if required.
+10. Run verification again after reboot.
+
+---
+
+## Documentation
+
+Additional docs:
 
 ```text
 docs/recovery.md
-```
-
-WireGuard guide:
-
-```text
+docs/limits.md
 docs/wireguard.md
 ```
