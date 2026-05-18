@@ -5,23 +5,46 @@ Fleet-ready Ubuntu 22.04 baseline for provisioning, hardening, tuning, verificat
 Current baseline version:
 
 ```text
-v1.6.1
+v1.6.2
 ```
 
 ---
 
-## v1.6.1 Hotfix
+## v1.6.2 Hotfix
 
-This release fixes the silent-exit issue found during real server testing.
+This release fixes the generated verifier package-check failure seen after `v1.6.1`.
 
-The previous script could stop while creating a new system tuning file and never reach the final verification-script creation step.
+The setup script completed correctly and created:
+
+```text
+/root/ubuntu22-verify.sh
+```
+
+but the verifier could fail during package checks with:
+
+```text
+binary: unbound variable
+```
 
 Fixed in this release:
 
-- Missing source files are no longer treated as failed backups.
-- Dry-run command wrappers now return success cleanly.
-- Future script failures now print the failing line and command.
-- Successful apply runs create `/root/ubuntu22-verify.sh`.
+- verifier package checks now avoid nested Bash expansion problems
+- package verification uses direct `dpkg-query` commands
+- the verifier no longer expands dpkg format strings as shell variables
+- update/install commands use noninteractive `needrestart` behavior where applicable
+
+---
+
+## Previous v1.6.1 Fix
+
+`v1.6.1` fixed the earlier silent-exit issue found during real server testing.
+
+Fixed behavior:
+
+- missing source files are no longer treated as failed backups
+- dry-run command wrappers return success cleanly
+- script failures print the failing line and command
+- successful apply runs create `/root/ubuntu22-verify.sh`
 
 ---
 
@@ -65,7 +88,7 @@ grep SCRIPT_VERSION setup/ubuntu22-system-setup.sh
 Expected:
 
 ```text
-SCRIPT_VERSION="1.6.1"
+SCRIPT_VERSION="1.6.2"
 ```
 
 Run dry-run mode:
@@ -131,15 +154,12 @@ bash /root/ubuntu22-verify.sh
 ## Recommended Workflow
 
 1. Pull the latest repository.
-2. Confirm the script version is `v1.6.1`.
-3. Run dry-run mode.
-4. Review the saved config.
-5. Run apply mode.
-6. Test the new admin login from a second terminal.
-7. Confirm `/root/ubuntu22-verify.sh` exists.
-8. Run verification.
-9. Reboot if required.
-10. Run verification again after reboot.
+2. Confirm the script version is `v1.6.2`.
+3. Run apply mode again and reuse the saved config.
+4. Confirm `/root/ubuntu22-verify.sh` exists.
+5. Run verification.
+6. Reboot if required.
+7. Run verification again after reboot.
 
 ---
 
